@@ -2727,8 +2727,14 @@ function startWakeRecog() {
   r.lang = "en-US";
 
   r.onstart = () => {
-    if (!_wakeArmed) setPillState("listening", 'listening for "hey claude"');
-    clawdVid.idle(true);
+    // Only repaint pill/avatar if nothing else is going on. The recognizer
+    // restarts every ~30s under Chrome — we mustn't yank the avatar out of
+    // chatting/thinking mid-turn.
+    if (_wakeArmed) return;
+    if (_ttsAudio) return;
+    const tab = (typeof currentTab === "function") ? currentTab() : null;
+    if (tab && tab.activeRunId) return;
+    setPillState("listening", 'listening for "hey claude"');
   };
 
   r.onresult = (e) => {
