@@ -1,0 +1,2989 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>🕸️ clawd-video-chat</title>
+<style>
+  :root {
+    --bg:  #1e0a0a;
+    --bg2: #2d1212;
+    --bg3: #3d1818;
+    --border: #5a2020;
+    --fg:  #f9eded;
+    --fg2: rgba(249,237,237,0.6);
+    --fg3: rgba(249,237,237,0.3);
+    --accent:  #cc2b2b;
+    --accent2: #e55a2b;
+    --user: rgba(204,43,43,0.14);
+    --user-border: rgba(204,43,43,0.3);
+    --assistant: #2d1212;
+    --tool: #1e0a0a;
+    --tool-border: #5a2020;
+    --thinking: #260e0e;
+    --thinking-border: #5a2020;
+    --error: #3d1010;
+    --error-border: rgba(229,90,43,0.45);
+    --ok:   #34eeb6;
+    --warn: #ffcf72;
+    --bad:  #e55a2b;
+    --font-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    --font-sans: -apple-system, BlinkMacSystemFont, "SF Pro Text", Inter, Roboto, sans-serif;
+    --radius: 12px;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; background: #00aa00; font-family: var(--font-sans); font-size: 16px; line-height: 1.5; overflow: hidden; height: 100%; }
+
+  @keyframes pulse  { 0%,100% { opacity: 1; } 50% { opacity: 0.3; } }
+  @keyframes fadeUp { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: none; } }
+
+  /* ── Widget: full-height transparent overlay, bottom-left ────────────── */
+  #widget {
+    position: fixed; left: 0; top: 0; bottom: 15px; right: 0;
+    width: 100%;
+    display: flex; flex-direction: column;
+    pointer-events: none;
+    z-index: 9999; color: var(--fg);
+    font-family: var(--font-sans); font-size: 16px;
+  }
+  #widget * { pointer-events: auto; }
+
+  /* ── Bubble (minimized) ───────────────────────────────────────────────── */
+  #bubble {
+    display: none; flex-direction: column; gap: 6px;
+    position: fixed; bottom: 60px; left: 8px;
+    width: 178px;
+    cursor: pointer; user-select: none; pointer-events: auto;
+  }
+  #bubble:hover { filter: brightness(1.1); }
+  #bubbleVid video { width: 100%; border-radius: 8px; display: block; }
+
+  /* Video cross-fade wrapper (added in JS) */
+  .clawd-vid-wrap { position: relative; line-height: 0; }
+  .clawd-vid-wrap > video { width: 100%; display: block; border-radius: 8px; }
+  .clawd-vid-wrap > video.vid-overlay {
+    position: absolute; top: 0; left: 0;
+    width: 100%; height: 100%;
+    opacity: 0;
+    pointer-events: none;
+  }
+  .clawd-vid-wrap > video.vid-overlay.snap { opacity: 1; }
+  .clawd-vid-wrap > video.vid-overlay.fading { opacity: 0; transition: opacity 0.4s ease; }
+  #bubbleLastMsg {
+    background: var(--bg2); border: 1px solid var(--border);
+    border-radius: 8px; padding: 8px 10px;
+    font-size: 13px; color: var(--fg2); line-height: 1.4;
+    max-height: 72px; overflow: hidden;
+  }
+  #widget.minimized #bubble { display: flex; }
+  #widget.minimized #panel  { display: none; }
+
+  #bubbleControls {
+    display: flex; align-items: center; gap: 6px;
+    padding: 0 2px;
+  }
+  #bubbleControls .bubbleBtn {
+    background: var(--bg2); border: 1px solid var(--border);
+    color: var(--fg2); width: 22px; height: 22px;
+    border-radius: 6px; cursor: pointer; font: inherit; font-size: 16px;
+    line-height: 1; padding: 0;
+    display: flex; align-items: center; justify-content: center;
+  }
+  #bubbleControls .bubbleBtn:hover { background: var(--bg3); color: var(--fg); }
+  #bubbleControls .bubbleIcon {
+    font-size: 16px; line-height: 1; display: none;
+  }
+  #bubble.rec  #bubbleMicIcon   { display: inline-block; animation: pulse 1s infinite; }
+  #bubble.busy #bubbleThinkIcon { display: inline-block; animation: pulse 1.5s infinite; }
+
+  /* ── Panel: transparent, full height ─────────────────────────────────── */
+  #panel {
+    display: flex; flex: 1; flex-direction: column; overflow: hidden;
+    background: transparent;
+    animation: fadeUp 0.2s ease;
+  }
+  #topRow { flex: 1; display: flex; overflow: hidden; }
+
+  /* ── Clawd video ─────────────────────────────────────────────────────── */
+  #clawdVid { flex-shrink: 0; padding: 0 6px 4px; cursor: pointer; }
+  #clawdVid video { width: 100%; border-radius: 8px; display: block; pointer-events: none; }
+
+  /* ── Sidebar: floating tab pills on the left ──────────────────────────── */
+  #sidebar {
+    width: 280px; flex-shrink: 0;
+    display: flex; flex-direction: column;
+    padding: 16px 6px 8px;
+    pointer-events: none;
+  }
+  #sidebar * { pointer-events: auto; }
+  #tabStack {
+    flex: 1; overflow: hidden;
+    display: flex; flex-direction: column; justify-content: flex-end;
+  }
+  #tabList {
+    overflow-y: auto; overflow-x: hidden;
+    display: flex; flex-direction: column; gap: 4px;
+    scrollbar-width: none;
+  }
+  .tab {
+    position: relative; padding: 7px 8px 7px 10px;
+    border-radius: 7px; cursor: pointer; user-select: none;
+    color: var(--fg2); background: var(--bg2);
+    border: 1px solid var(--border);
+    font-size: 12px; line-height: 1.3; transition: all 0.15s;
+  }
+  .tab .label { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding-right: 14px; }
+  .tab:hover { background: var(--bg3); color: var(--fg); border-color: var(--border); }
+  .tab.active { background: #3d0c0c; color: var(--fg); border-color: var(--accent); }
+  .tab.dirty:not(.active) .label::before { content: "● "; color: var(--warn); font-size: 9px; vertical-align: middle; }
+  .tab .close {
+    display: none; position: absolute; top: 3px; right: 3px;
+    background: var(--bg); border: none; color: var(--fg3);
+    border-radius: 3px; font-size: 11px; padding: 0 4px; cursor: pointer; line-height: 1.4;
+  }
+  .tab:hover .close { display: block; }
+  .tab .close:hover { color: #fff; background: var(--accent); }
+
+  #sidebarFooter { display: none; }
+  .sb-btn {
+    width: 30px; height: 30px; border-radius: 6px;
+    background: transparent; border: none;
+    color: var(--fg3); cursor: pointer; font-size: 16px;
+    display: flex; align-items: center; justify-content: center;
+    transition: color 0.1s;
+  }
+  .sb-btn:hover { color: var(--fg); }
+  #statusDot {
+    width: 7px; height: 7px; border-radius: 50%;
+    background: var(--fg3); flex-shrink: 0;
+    transition: background 0.3s, box-shadow 0.3s;
+  }
+  #statusDot.ok        { background: var(--ok);   box-shadow: 0 0 5px var(--ok); }
+  #statusDot.connecting{ background: var(--warn);  animation: pulse 1s infinite; }
+  #statusDot.bad       { background: var(--bad); }
+
+  /* ── Main: messages + input ───────────────────────────────────────────── */
+
+  /* Messages float up from bottom */
+  #msgArea {
+    flex: 1; min-width: 0; overflow-y: auto; overflow-x: hidden;
+    display: flex; flex-direction: column;
+    padding: 0 10px 0 4px;
+    scrollbar-width: none;
+  }
+  #msgArea::-webkit-scrollbar { display: none; }
+  #transcript { margin-top: auto; display: flex; flex-direction: column; gap: 6px; padding: 8px 0 4px; }
+  .transcript-pane { display: none; flex-direction: column; gap: 6px; }
+  .transcript-pane.active { display: flex; }
+
+  /* Messages */
+  .msg {
+    padding: 7px 10px; border-radius: 8px; border: 1px solid transparent;
+    font-size: 14px; animation: fadeUp 0.2s ease;
+  }
+  .msg .role {
+    font-size: 9px; text-transform: uppercase; letter-spacing: 0.08em;
+    color: var(--fg3); margin-bottom: 3px; font-weight: 600;
+  }
+  .msg .body { white-space: pre-wrap; word-wrap: break-word; overflow-wrap: anywhere; }
+  .msg .body a { color: var(--accent); text-decoration: underline; }
+  .msg .body a:visited { color: #a32222; }
+  .msg .body a:hover { color: var(--accent2); }
+  .msg .body code {
+    background: var(--bg3); padding: 1px 4px; border-radius: 3px;
+    font-family: var(--font-mono); font-size: 0.9em;
+  }
+  .msg .body pre {
+    background: var(--bg); padding: 8px 10px; border-radius: 6px;
+    overflow-x: auto; font-family: var(--font-mono); font-size: 11px;
+    border: 1px solid var(--border); margin: 4px 0;
+  }
+  .msg.user { background: #2e0909; border-color: #5a1515; }
+  .msg.assistant { background: var(--bg2); border-color: var(--border); overflow: hidden; }
+  .msg.assistant::after { content: ""; display: table; clear: both; }
+  .msg.system { font-size: 11px; color: var(--fg3); background: var(--bg); }
+  .msg.error { background: var(--error); border-color: var(--error-border); }
+  .msg.error .role { color: #ff9e9e; }
+  .msg.faded { display: none; }
+  .transcript-pane.revealing .msg.faded { display: block; }
+  .transcript-pane.revealing .hidden-counter { display: none; }
+  .hidden-counter {
+    align-self: center; cursor: pointer; user-select: none;
+    background: var(--bg2); border: 1px solid var(--border);
+    color: var(--fg3); font-size: 10px; font-family: var(--font-mono);
+    padding: 2px 8px; border-radius: 999px;
+    transition: color 0.1s, border-color 0.1s;
+  }
+  .hidden-counter:hover { color: var(--fg); border-color: var(--accent); }
+
+  /* Tool cards */
+  .tool-card {
+    margin: 6px 0; background: var(--tool); border: 1px solid var(--tool-border);
+    border-radius: 6px; overflow: hidden; font-family: var(--font-mono); font-size: 11px;
+  }
+  .tool-card .hdr {
+    padding: 6px 10px; display: flex; align-items: center; gap: 6px; cursor: pointer;
+    user-select: none; background: var(--bg);
+  }
+  .tool-card .hdr:hover { background: var(--bg2); }
+  .tool-card .hdr .icon { flex-shrink: 0; }
+  .tool-card .hdr .name { color: #d4a060; font-weight: 500; flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .tool-card .hdr .status {
+    font-size: 9px; text-transform: uppercase; padding: 1px 6px;
+    border-radius: 999px; background: var(--bg3); color: var(--fg2);
+  }
+  .tool-card .hdr .status.running { color: var(--warn); }
+  .tool-card .hdr .status.done    { color: var(--ok); }
+  .tool-card .hdr .status.error   { color: var(--bad); }
+  .tool-card .hdr .chev { margin-left: auto; color: var(--fg3); transition: transform 0.15s; }
+  .tool-card.open .hdr .chev { transform: rotate(90deg); }
+  .tool-card .body-wrap { display: none; }
+  .tool-card.open .body-wrap { display: block; }
+  .tool-card .section { padding: 6px 10px; border-top: 1px solid var(--border); }
+  .tool-card .section .label { color: var(--fg3); font-size: 9px; text-transform: uppercase; margin-bottom: 3px; letter-spacing: 0.05em; }
+  .tool-card .section pre { margin: 0; padding: 0; background: transparent; border: none; white-space: pre-wrap; color: var(--fg); max-height: 240px; overflow-y: auto; }
+  .tool-card.claude-code { border-color: #b88dd6; }
+  .tool-card.claude-code .hdr .name { color: #c8a4e0; }
+
+  /* Thinking pill */
+  .thinking-card {
+    float: right; clear: right; margin: 0 0 4px 8px;
+    background: var(--thinking); border: 1px solid var(--thinking-border);
+    border-radius: 20px; font-size: 11px; overflow: hidden;
+    cursor: pointer; user-select: none; transition: border-radius 0.15s;
+  }
+  .thinking-card.open { border-radius: 8px; }
+  .thinking-card .hdr { display: flex; align-items: center; padding: 3px 7px; }
+  .thinking-card .hdr .icon { font-size: 14px; line-height: 1; }
+  .thinking-card .hdr .label, .thinking-card .hdr .preview, .thinking-card .hdr .chev { display: none; }
+  .thinking-card .body-wrap { display: none; padding: 6px 10px 8px; max-width: 280px; }
+  .thinking-card.open .body-wrap { display: block; }
+  .thinking-card .body { color: var(--fg2); font-style: italic; white-space: pre-wrap; max-height: 200px; overflow-y: auto; font-size: 10px; line-height: 1.5; }
+
+  /* Working indicator */
+  .working { display: inline-flex; align-items: center; gap: 5px; color: var(--fg3); font-size: 11px; }
+  .working .blink { width: 5px; height: 5px; border-radius: 50%; background: var(--accent); animation: pulse 1s infinite; }
+  .elapsed { font-size: 10px; color: var(--fg3); }
+
+  /* Empty state */
+  .empty { text-align: center; color: var(--fg3); padding: 40px 16px; }
+  .empty h2 { color: var(--fg2); font-weight: 500; font-size: 15px; margin: 0 0 6px; }
+  .empty p  { margin: 0; font-size: 11px; }
+
+  /* ── Input area: full-width bottom strip ─────────────────────────────── */
+  #inputArea {
+    flex-shrink: 0; padding: 6px 10px 10px 10px;
+    background: transparent;
+  }
+  #composer { display: flex; flex-direction: column; gap: 6px; }
+  #composer textarea {
+    width: 100%; background: var(--bg2); color: var(--fg);
+    border: 1px solid var(--border); border-radius: 10px; resize: none;
+    font: inherit; font-size: 15px; padding: 9px 12px;
+    min-height: 48px; max-height: 140px; line-height: 1.5;
+    box-sizing: border-box;
+  }
+  #composer textarea:focus { outline: none; border-color: var(--accent); }
+  #composer textarea::placeholder { color: var(--fg3); }
+  #controlsRow {
+    display: flex; align-items: center; gap: 8px;
+  }
+  #modelPicker {
+    flex: 1;
+    padding: 5px 22px 5px 8px; border-radius: 6px;
+    border: 1px solid var(--border); background: var(--bg2); color: var(--fg3);
+    font: inherit; font-size: 11px; cursor: pointer;
+    appearance: none; -webkit-appearance: none;
+    background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='8' height='5' viewBox='0 0 8 5'><path fill='%23663333' d='M0 0l4 5 4-5z'/></svg>");
+    background-repeat: no-repeat; background-position: right 8px center;
+  }
+  #modelPicker:focus { outline: 1px solid var(--accent); }
+  #modelPicker:disabled { opacity: 0.4; cursor: not-allowed; }
+  #btnMic { font-size: 18px; }
+  #btnMic.recording { color: var(--bad); animation: pulse 1s infinite; }
+  #btnSpeak { font-size: 18px; }
+  #btnSpeak.active { color: var(--ok); }
+
+  #btnSend {
+    background: var(--accent); color: #fff; border: none; border-radius: 8px;
+    padding: 6px 14px; font: inherit; font-size: 14px; font-weight: 700;
+    cursor: pointer; flex-shrink: 0; height: 34px;
+  }
+  #btnSend:hover { filter: brightness(1.15); }
+  #btnSend:disabled { opacity: 0.4; cursor: not-allowed; }
+  #btnSend.stop { background: var(--bad); }
+
+  /* ── Settings panel ───────────────────────────────────────────────────── */
+  #settings {
+    position: fixed; bottom: 72px; left: 16px; width: 384px; z-index: 10000;
+    background: var(--bg2); border: 1px solid var(--border); border-radius: 10px;
+    padding: 14px; box-shadow: 0 16px 48px rgba(0,0,0,0.6);
+    display: none;
+  }
+  #settings.open { display: block; }
+  #settings h3 { margin: 0 0 10px; font-size: 11px; color: var(--fg2); text-transform: uppercase; letter-spacing: 0.06em; }
+  #settings label { display: block; font-size: 10px; color: var(--fg3); margin-top: 8px; margin-bottom: 3px; }
+  #settings input, #settings select {
+    width: 100%; padding: 6px 9px; background: var(--bg); color: var(--fg);
+    border: 1px solid var(--border); border-radius: 6px; font: inherit; font-size: 11px;
+    font-family: var(--font-mono);
+  }
+  #settings input:focus, #settings select:focus { outline: none; border-color: var(--accent); }
+  #settings .row-btn { margin-top: 12px; display: flex; gap: 6px; }
+  #settings .row-btn button { flex: 1; padding: 7px; border-radius: 6px; border: 1px solid var(--border); background: var(--bg3); color: var(--fg); font: inherit; font-size: 11px; cursor: pointer; }
+  #settings .row-btn button.primary { background: var(--accent); color: #fff; border-color: var(--accent); font-weight: 600; }
+  #settings .row-btn button:hover { filter: brightness(1.15); }
+
+  /* ── OBS / Zoom mode ──────────────────────────────────────────────────────
+     Default for clawd-video-chat: hide the chat UI and show only the avatar
+     centered on the chroma-green background, plus a small status pill.
+     URL ?dev=1 disables this and reveals the full chat panel for debugging. */
+  body.obs #tabList,
+  body.obs #msgArea,
+  body.obs #inputArea,
+  body.obs #bubble,
+  body.obs #settings { display: none !important; }
+  body.obs #widget { bottom: 0; }
+  body.obs #panel,
+  body.obs #topRow {
+    align-items: center; justify-content: center;
+    height: 100vh; width: 100vw;
+    overflow: hidden;
+  }
+  body.obs #sidebar {
+    width: auto; flex-shrink: 1; padding: 0;
+    pointer-events: none;
+  }
+  body.obs #tabStack {
+    flex: 0; overflow: visible;
+    display: flex; align-items: center; justify-content: center;
+  }
+  body.obs #clawdVid {
+    flex-shrink: 0; padding: 0; cursor: default;
+    width: 70vmin; max-width: 720px;
+  }
+  body.obs #clawdVid video { border-radius: 16px; }
+  body.obs #status-pill {
+    position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%);
+    background: rgba(0,0,0,0.65); color: var(--fg);
+    padding: 6px 14px; border-radius: 20px;
+    font-family: var(--font-mono); font-size: 12px; line-height: 1;
+    display: flex; align-items: center; gap: 8px;
+    pointer-events: none;
+    z-index: 10000;
+    transition: opacity 0.3s ease;
+  }
+  body.obs #status-pill .dot {
+    width: 8px; height: 8px; border-radius: 50%;
+    background: var(--fg2);
+  }
+  body.obs #status-pill.listening .dot { background: var(--ok); animation: pulse 2s infinite; }
+  body.obs #status-pill.armed     .dot { background: var(--accent2); animation: pulse 0.8s infinite; }
+  body.obs #status-pill.speaking  .dot { background: var(--warn); }
+  body.obs #status-pill.thinking  .dot { background: #888; animation: pulse 1.5s infinite; }
+  body.obs #status-pill.error     .dot { background: var(--bad); }
+  body.obs.hide-status #status-pill { opacity: 0; }
+</style>
+</head>
+<body class="obs">
+
+<!-- Status pill — only visible in OBS mode. Reflects wake-word listener state. -->
+<div id="status-pill" class="listening">
+  <span class="dot"></span>
+  <span class="label">listening for "hey claude"</span>
+</div>
+
+<div id="widget" class="expanded">
+
+  <!-- Minimized bubble -->
+  <div id="bubble">
+    <div id="bubbleControls">
+      <button type="button" id="bubbleNewTab" class="bubbleBtn" title="New chat">+</button>
+      <span id="bubbleMicIcon" class="bubbleIcon" title="Listening">🎤</span>
+      <span id="bubbleThinkIcon" class="bubbleIcon" title="Thinking…">💭</span>
+    </div>
+    <div id="bubbleVid">
+      <video id="clawdVideoMin" autoplay muted playsinline src="clawdassets/idle_1.mp4"></video>
+    </div>
+    <div id="bubbleLastMsg"></div>
+  </div>
+
+  <!-- Expanded panel -->
+  <div id="panel">
+
+    <!-- Top row: sidebar + messages -->
+    <div id="topRow">
+      <div id="sidebar">
+        <div id="tabStack">
+          <div id="clawdVid">
+            <video id="clawdVideo" autoplay muted playsinline src="clawdassets/idle_1.mp4"></video>
+          </div>
+          <div id="tabList"></div>
+        </div>
+      </div>
+      <div id="msgArea">
+        <div id="transcript"></div>
+      </div>
+    </div>
+
+    <!-- Bottom: full-width input + controls -->
+    <div id="inputArea">
+      <form id="composer" onsubmit="event.preventDefault(); onSend();">
+        <textarea id="input" rows="2" placeholder="message… (⌘↵)" autofocus></textarea>
+        <div id="controlsRow">
+          <button class="sb-btn" type="button" id="btnNewTab" title="New tab">+</button>
+          <button class="sb-btn" type="button" id="btnSettings" title="Settings">⚙</button>
+          <span id="statusDot" class="connecting" title="connecting…"></span>
+          <select id="modelPicker" aria-label="Model">
+            <option value="bankr/minimax-m2.7">MiniMax 2.7 · $0.30/$1.20</option>
+            <option value="bankr/kimi-k2.6">Kimi K2.6 · $0.95/$4</option>
+            <option value="bankr/claude-haiku-4.5">Haiku · $1/$5</option>
+            <option value="bankr/deepseek-v4-pro">DeepSeek V4 Pro · $1.74/$3.48</option>
+            <option value="bankr/claude-sonnet-4.6">Sonnet · $3/$15</option>
+            <option value="bankr/claude-opus-4.6">Opus · $5/$25</option>
+          </select>
+          <button class="sb-btn" type="button" id="btnSpeak" title="TTS off — click to enable">🔇</button>
+          <button class="sb-btn" type="button" id="btnMic" title="Voice input">🎤</button>
+          <button id="btnSend" type="submit">↑</button>
+        </div>
+      </form>
+    </div>
+
+  </div>
+</div>
+
+<!-- Settings panel (separate overlay, near widget) -->
+<div id="settings">
+  <h3>Settings</h3>
+  <label>WebSocket URL</label>
+  <input id="optWsUrl" placeholder="ws://127.0.0.1:18789" />
+  <label>Auth Token</label>
+  <input id="optToken" type="password" placeholder="gateway.auth.token" />
+  <label>Bankr API Key</label>
+  <input id="optBankrKey" type="password" placeholder="bk_… (auto tab titles)" />
+  <label>Thinking</label>
+  <select id="optThinking">
+    <option value="off">off</option>
+    <option value="on">on</option>
+    <option value="high" selected>high</option>
+    <option value="stream">stream</option>
+  </select>
+  <div class="row-btn">
+    <button id="btnSettingsClose">Cancel</button>
+    <button id="btnSettingsSave" class="primary">Save &amp; reconnect</button>
+  </div>
+</div>
+
+<script>
+// ── Clawd video state machine ─────────────────────────────────────────────
+const clawdVid = (() => {
+  const IDLES = [
+    "clawdassets/idle_1.mp4",
+    "clawdassets/idle_2.mp4",
+    "clawdassets/idle.mp4",
+    "clawdassets/idle_lookaround.mp4",
+  ];
+  const RARE_BURGER  = "clawdassets/idle-rare-eats-a-burger.mp4";
+  const RARE_SMOKING = "clawdassets/idle-smoking.mp4";
+  const CHAT_DEFAULT = "clawdassets/chatting_1.mp4";
+  const CHAT_SHORT   = "clawdassets/short-subtle-talking.mp4";
+  const CHAT_DRUNK   = "clawdassets/talking-lil-drunk.mp4";
+  const CHAT_HELLO   = "clawdassets/talking-saying-hello.mp4";
+  const CHAT_EXPLAIN_HANDS = "clawdassets/talking-explaining-with-his-hands.mp4";
+  const CHAT_EXPLAIN = "clawdassets/explaining.mp4";
+  const CHAT_SATISFIED = "clawdassets/talking-satisfied-just-finished-something-good.mp4";
+  const FIRST_HELLO  = "clawdassets/saying-hello-for-the-first-time.mp4";
+  const BUILDING     = "clawdassets/building.mp4";
+  const BUILD_HAMMER_MED  = "clawdassets/hammering-tool-use-building-medium.mp4";
+  const BUILD_HAMMER_LONG = "clawdassets/longer-hammering-tool-use.mp4";
+  const BUILD_CLI_QUICK   = "clawdassets/quick-command-line-tool-use.mp4";
+  const BUILD_CLI_MED     = "clawdassets/medium-cli-or-tool-use.mp4";
+  const BUILD_CLI_LONG    = "clawdassets/longer-cli-command-line-tool-use.mp4";
+  const THINKING     = "clawdassets/thinking-idle-light-thinking.mp4";
+  const DEEP_THINKING = "clawdassets/deep-in-thought-or-listening.mp4";
+  const LISTENING    = "clawdassets/thinking-listening.mp4";
+
+  const DEEP_THINK_AFTER_MS = 5000;
+  const BUILD_MED_AFTER_MS  = 8000;
+  const BUILD_LONG_AFTER_MS = 25000;
+
+  let _chatting = false;
+  let _building = false;
+  let _thinking = false;
+  let _listening = false;
+  let _deepTimer = null;
+  let _buildingCat = null;
+  let _buildingStartTs = 0;
+  let _buildStageTimers = [];
+
+  function categorizeTool(name) {
+    const n = (name || "").toLowerCase();
+    if (!n) return "hammer";
+    if (n === "bash" || n.includes("command") || n.includes("shell") || n.includes("exec") || n.includes("terminal") || n.includes("run_")) return "cli";
+    return "hammer";
+  }
+  function buildingSrcFor(cat, elapsedMs) {
+    if (cat === "cli") {
+      if (elapsedMs >= BUILD_LONG_AFTER_MS) return BUILD_CLI_LONG;
+      if (elapsedMs >= BUILD_MED_AFTER_MS)  return BUILD_CLI_MED;
+      return BUILD_CLI_QUICK;
+    }
+    if (elapsedMs >= BUILD_LONG_AFTER_MS) return BUILD_HAMMER_LONG;
+    if (elapsedMs >= BUILD_MED_AFTER_MS)  return BUILD_HAMMER_MED;
+    return BUILDING;
+  }
+
+  function nextIdle() {
+    const r = Math.random();
+    if (r < 0.005) return RARE_BURGER;        // ~1 in 200
+    if (r < 0.02)  return RARE_SMOKING;       // ~1.5%
+    return IDLES[Math.floor(Math.random() * IDLES.length)];
+  }
+
+  function nextChat(text, opts) {
+    opts = opts || {};
+    const t = (text || "").trim();
+    if (opts.satisfied) return CHAT_SATISFIED;
+    if (opts.firstEver) return FIRST_HELLO;
+    if (/^(hi|hello|hey|howdy|sup|yo|hiya|greetings)\b/i.test(t)) return CHAT_HELLO;
+    if (t.length > 0 && t.length < 40) return CHAT_SHORT;
+    if (t.length > 200) return Math.random() < 0.5 ? CHAT_EXPLAIN_HANDS : CHAT_EXPLAIN;
+    return CHAT_DEFAULT;
+  }
+
+  // Wrap each primary video and add an overlay layer for cross-fade.
+  const slots = ["clawdVideo", "clawdVideoMin"].map(id => {
+    const primary = document.getElementById(id);
+    const wrap = document.createElement("div");
+    wrap.className = "clawd-vid-wrap";
+    primary.parentNode.insertBefore(wrap, primary);
+    wrap.appendChild(primary);
+    const overlay = primary.cloneNode(false);
+    overlay.removeAttribute("id");
+    overlay.removeAttribute("src");
+    overlay.classList.add("vid-overlay");
+    wrap.appendChild(overlay);
+    // Once metadata is known, lock the wrapper's aspect-ratio so it never
+    // collapses while primary's src is reloading.
+    const setRatio = () => {
+      const w = primary.videoWidth, h = primary.videoHeight;
+      if (w && h) wrap.style.aspectRatio = `${w} / ${h}`;
+    };
+    if (primary.videoWidth) setRatio();
+    else primary.addEventListener("loadedmetadata", setRatio, { once: true });
+    return { primary, overlay, wrap };
+  });
+
+  const LOOPING_SRCS = new Set([
+    BUILDING, BUILD_HAMMER_MED, BUILD_HAMMER_LONG,
+    BUILD_CLI_QUICK, BUILD_CLI_MED, BUILD_CLI_LONG,
+    THINKING, DEEP_THINKING, LISTENING,
+  ]);
+  function play(src) {
+    const shouldLoop = LOOPING_SRCS.has(src);
+    slots.forEach(({ primary, overlay, wrap }) => {
+      // Freeze wrapper's current pixel height so it can't collapse while
+      // primary's src is reloading (which would also shrink the absolute
+      // overlay at 100% of wrap height).
+      const h = wrap.offsetHeight;
+      if (h) wrap.style.minHeight = h + "px";
+      // Cancel any in-flight listeners.
+      if (overlay._onPlaying) overlay.removeEventListener("playing", overlay._onPlaying);
+      if (primary._onPlaying) primary.removeEventListener("playing", primary._onPlaying);
+      if (overlay._fadeTimer) { clearTimeout(overlay._fadeTimer); overlay._fadeTimer = null; }
+
+      primary.loop = shouldLoop;
+      overlay.loop = shouldLoop;
+
+      // Same src already → just ensure primary is playing, no transition.
+      if (primary.src && primary.src.endsWith(src) && !primary.paused) return;
+
+      // Reset overlay state.
+      overlay.classList.remove("snap", "fading");
+      overlay.src = src;
+      overlay.play().catch(() => {});
+
+      // If the file 404s or fails to decode, abort the transition so we
+      // don't leave the overlay stuck mid-state. Primary keeps playing
+      // whatever it had — graceful fallback for missing optional clips.
+      const onError = () => {
+        overlay.removeEventListener("error", onError);
+        overlay.removeEventListener("playing", onOverlayPlaying);
+        overlay._onPlaying = null;
+        overlay.classList.remove("snap", "fading");
+        wrap.style.minHeight = "";
+      };
+      overlay.addEventListener("error", onError, { once: true });
+
+      const onOverlayPlaying = () => {
+        overlay.removeEventListener("error", onError);
+        overlay.removeEventListener("playing", onOverlayPlaying);
+        overlay._onPlaying = null;
+
+        // Snap overlay to fully opaque (instant cover, no fade-in flash).
+        overlay.classList.add("snap");
+
+        const onPrimaryPlaying = () => {
+          primary.removeEventListener("playing", onPrimaryPlaying);
+          primary._onPlaying = null;
+          try { primary.currentTime = overlay.currentTime; } catch (_) {}
+          // Now fade overlay out, revealing primary which is in sync.
+          requestAnimationFrame(() => {
+            overlay.classList.remove("snap");
+            overlay.classList.add("fading");
+            overlay._fadeTimer = setTimeout(() => {
+              overlay.classList.remove("fading");
+              overlay._fadeTimer = null;
+              wrap.style.minHeight = "";
+            }, 450);
+          });
+        };
+        primary._onPlaying = onPrimaryPlaying;
+        primary.addEventListener("playing", onPrimaryPlaying);
+        // Wait one frame so 'snap' is committed before we kick the primary
+        // src reload (which momentarily blanks it underneath the cover).
+        requestAnimationFrame(() => {
+          primary.src = src;
+          primary.play().catch(() => {});
+        });
+      };
+      overlay._onPlaying = onOverlayPlaying;
+      overlay.addEventListener("playing", onOverlayPlaying);
+    });
+  }
+
+  function onEnded() {
+    // building/thinking loop, so onEnded won't fire while in those states.
+    if (_chatting) _chatting = false;  // play chatting once, then return to idle
+    play(nextIdle());
+  }
+
+  // Only the primary drives 'ended'; the overlay is fading and we don't care.
+  slots.forEach(({ primary }) => primary.addEventListener("ended", onEnded));
+
+  function clearAll() {
+    _chatting = _building = _thinking = _listening = false;
+    _buildingCat = null;
+    _buildingStartTs = 0;
+    if (_deepTimer) { clearTimeout(_deepTimer); _deepTimer = null; }
+    if (_buildStageTimers.length) {
+      _buildStageTimers.forEach(clearTimeout);
+      _buildStageTimers = [];
+    }
+  }
+
+  return {
+    chatting(text, opts) {
+      // Already chatting: don't re-pick a variant mid-clip (TTS chunk
+      // boundaries call this repeatedly — let the current clip finish).
+      _building = false;
+      _thinking = false;
+      _listening = false;
+      if (_deepTimer) { clearTimeout(_deepTimer); _deepTimer = null; }
+      if (_chatting) return;
+      _chatting = true;
+      play(nextChat(text, opts));
+    },
+    building(toolName) {
+      const cat = categorizeTool(toolName);
+      if (_building && cat === _buildingCat) return;  // same category, keep looping
+
+      if (!_building) {
+        clearAll();
+        _building = true;
+        _buildingStartTs = Date.now();
+      }
+      _buildingCat = cat;
+
+      const elapsed = Date.now() - _buildingStartTs;
+      play(buildingSrcFor(cat, elapsed));
+
+      // Cancel previous stage timers; schedule remaining stage transitions.
+      _buildStageTimers.forEach(clearTimeout);
+      _buildStageTimers = [];
+      if (elapsed < BUILD_MED_AFTER_MS) {
+        _buildStageTimers.push(setTimeout(() => {
+          if (_building) play(buildingSrcFor(_buildingCat, BUILD_MED_AFTER_MS));
+        }, BUILD_MED_AFTER_MS - elapsed));
+      }
+      if (elapsed < BUILD_LONG_AFTER_MS) {
+        _buildStageTimers.push(setTimeout(() => {
+          if (_building) play(buildingSrcFor(_buildingCat, BUILD_LONG_AFTER_MS));
+        }, BUILD_LONG_AFTER_MS - elapsed));
+      }
+    },
+    thinking() {
+      if (_thinking) return;
+      clearAll();
+      _thinking = true;
+      play(THINKING);
+      // After a few seconds of waiting, switch to deeper thinking variant.
+      _deepTimer = setTimeout(() => {
+        _deepTimer = null;
+        if (_thinking) play(DEEP_THINKING);
+      }, DEEP_THINK_AFTER_MS);
+    },
+    listening() {
+      if (_listening) return;
+      clearAll();
+      _listening = true;
+      play(LISTENING);
+    },
+    idle(immediate = false) {
+      clearAll();
+      if (immediate) play(nextIdle());
+    },
+  };
+})();
+
+// ══════════════════════════════════════════════════════════════════════════
+// clawd-web — native openclaw gateway WebSocket client (multi-tab)
+// ══════════════════════════════════════════════════════════════════════════
+
+if (new URLSearchParams(location.search).has("debug")) window.__clawdDebug = true;
+window.__eventLog = [];
+(function installWsTap() {
+  const _OrigWS = window.WebSocket;
+  function TappedWS(...args) {
+    const s = new _OrigWS(...args);
+    s.addEventListener("message", (ev) => {
+      try {
+        const f = JSON.parse(ev.data);
+        if (f?.type === "event" && (f.event === "agent" || f.event === "chat")) {
+          window.__eventLog.push({ event: f.event, payload: f.payload, ts: Date.now() });
+          if (window.__eventLog.length > 500) window.__eventLog.shift();
+        }
+      } catch {}
+    });
+    return s;
+  }
+  TappedWS.prototype = _OrigWS.prototype;
+  TappedWS.CONNECTING = _OrigWS.CONNECTING;
+  TappedWS.OPEN = _OrigWS.OPEN;
+  TappedWS.CLOSING = _OrigWS.CLOSING;
+  TappedWS.CLOSED = _OrigWS.CLOSED;
+  window.WebSocket = TappedWS;
+})();
+
+const DEFAULT_MODEL = "bankr/claude-sonnet-4.6";
+
+const state = {
+  ws: null,
+  reqSeq: 0,
+  pending: new Map(),
+  config: null,         // { wsUrl, token } — sessionKey now lives per-tab
+  connected: false,
+  thinking: localStorage.getItem("clawd.thinking") || "high",
+  identity: null,
+  connectNonce: null,
+  tabs: [],             // [{ id, sessionKey, displayName, selectedModel, lastSentModel, activeRunId, runs, runCompletions, paneEl, historyLoaded, verboseEnabled, dirty }]
+  activeTabId: null,
+};
+
+// ── DOM ────────────────────────────────────────────────────────────────────
+const $transcript   = document.getElementById("transcript");
+const $tabs         = document.getElementById("tabList");
+const $input        = document.getElementById("input");
+const $btnSend      = document.getElementById("btnSend");
+const $btnSettings  = document.getElementById("btnSettings");
+const $btnNewTab    = document.getElementById("btnNewTab");
+const $btnSettingsClose = document.getElementById("btnSettingsClose");
+const $btnSettingsSave  = document.getElementById("btnSettingsSave");
+const $settings     = document.getElementById("settings");
+const $optWsUrl     = document.getElementById("optWsUrl");
+const $optToken     = document.getElementById("optToken");
+const $optThinking  = document.getElementById("optThinking");
+const $statusDot    = document.getElementById("statusDot");
+const $widget       = document.getElementById("widget");
+
+// ── Utilities ──────────────────────────────────────────────────────────────
+function setStatus(s, text) {
+  $statusDot.className = s;
+  $statusDot.title = text;
+}
+
+function toggleMinimize() {
+  const minimized = $widget.classList.toggle("minimized");
+  $widget.classList.toggle("expanded", !minimized);
+  localStorage.setItem("clawd.minimized", minimized ? "1" : "0");
+  if (!minimized) {
+    // re-focus input when expanding
+    requestAnimationFrame(() => $input.focus());
+  }
+}
+
+if (localStorage.getItem("clawd.minimized") === "1") {
+  $widget.classList.add("minimized");
+  $widget.classList.remove("expanded");
+}
+document.getElementById("bubble").addEventListener("click", toggleMinimize);
+document.getElementById("clawdVid").addEventListener("click", toggleMinimize);
+$btnNewTab.addEventListener("click", () => createTab());
+
+document.getElementById("bubbleControls").addEventListener("click", (e) => e.stopPropagation());
+document.getElementById("bubbleNewTab").addEventListener("click", () => createTab());
+
+const $bubble = document.getElementById("bubble");
+setInterval(() => {
+  $bubble.classList.toggle("rec", !!_recording);
+  $bubble.classList.toggle("busy", state.tabs.some(t => t.activeRunId));
+}, 250);
+
+function autosize($el) {
+  $el.style.height = "auto";
+  $el.style.height = Math.min($el.scrollHeight, 200) + "px";
+}
+
+function uuid() {
+  if (crypto.randomUUID) return crypto.randomUUID();
+  return "id-" + Date.now() + "-" + Math.random().toString(36).slice(2);
+}
+
+function shortHex(n=8) {
+  const buf = new Uint8Array(Math.ceil(n / 2));
+  crypto.getRandomValues(buf);
+  return Array.from(buf, b => b.toString(16).padStart(2, "0")).join("").slice(0, n);
+}
+
+function getMsgArea() { return document.getElementById("msgArea"); }
+
+function scrollToBottom(force = false) {
+  const el = getMsgArea();
+  if (!el) return;
+  const nearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 120;
+  if (force || nearBottom) {
+    el.scrollTop = el.scrollHeight;
+    el.classList.remove("scrolled-up");
+  }
+}
+
+let _scrollSaveTimer = null;
+function persistScroll() {
+  const tab = currentTab();
+  if (!tab) return;
+  const el = getMsgArea();
+  if (!el) return;
+  tab.scrollTop = el.scrollTop;
+  clearTimeout(_scrollSaveTimer);
+  _scrollSaveTimer = setTimeout(saveTabs, 300);
+  const nearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 120;
+  el.classList.toggle("scrolled-up", !nearBottom);
+}
+document.addEventListener("DOMContentLoaded", () => {
+  const el = getMsgArea();
+  if (el) el.addEventListener("scroll", persistScroll, { passive: true });
+});
+
+function renderText(text) {
+  if (!text) return "";
+  const esc = s => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+
+  function renderInline(raw) {
+    let s = esc(raw);
+    const codeSlots = [];
+    s = s.replace(/`([^`\n]+)`/g, (_, c) => { codeSlots.push(c); return ` ${codeSlots.length - 1} `; });
+    s = s.replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g, '<a href="$2" target="_blank" rel="noreferrer">$1</a>');
+    s = s.replace(/(^|[\s(])((?:https?:\/\/)[^\s<)]+)/g, (_, pre, url) => `${pre}<a href="${url}" target="_blank" rel="noreferrer">${url}</a>`);
+    s = s.replace(/\*\*([^*\n]+)\*\*/g, "<strong>$1</strong>");
+    s = s.replace(/__([^_\n]+)__/g, "<strong>$1</strong>");
+    s = s.replace(/(^|[^*\w])\*([^*\n]+)\*(?!\w)/g, "$1<em>$2</em>");
+    s = s.replace(/(^|[^_\w])_([^_\n]+)_(?!\w)/g, "$1<em>$2</em>");
+    s = s.replace(/ (\d+) /g, (_, i) => `<code>${codeSlots[+i]}</code>`);
+    return s;
+  }
+
+  function renderBlock(block) {
+    const lines = block.split("\n");
+    const out = [];
+    let listType = null;
+    const closeList = () => { if (listType) { out.push(`</${listType}>`); listType = null; } };
+    for (const line of lines) {
+      if (!line.trim()) { closeList(); out.push("<br/>"); continue; }
+      const h = /^(#{1,6})\s+(.*)$/.exec(line);
+      if (h) { closeList(); out.push(`<h${h[1].length}>${renderInline(h[2])}</h${h[1].length}>`); continue; }
+      const ul = /^\s*[-*+]\s+(.*)$/.exec(line);
+      if (ul) { if (listType !== "ul") { closeList(); listType = "ul"; out.push("<ul>"); } out.push(`<li>${renderInline(ul[1])}</li>`); continue; }
+      const ol = /^\s*\d+\.\s+(.*)$/.exec(line);
+      if (ol) { if (listType !== "ol") { closeList(); listType = "ol"; out.push("<ol>"); } out.push(`<li>${renderInline(ol[1])}</li>`); continue; }
+      const bq = /^>\s?(.*)$/.exec(line);
+      if (bq) { closeList(); out.push(`<blockquote>${renderInline(bq[1])}</blockquote>`); continue; }
+      closeList();
+      out.push(`${renderInline(line)}<br/>`);
+    }
+    closeList();
+    return out.join("");
+  }
+
+  const parts = [];
+  let i = 0;
+  const re = /```(\w*)\n([\s\S]*?)```/g;
+  let m;
+  while ((m = re.exec(text)) !== null) {
+    if (m.index > i) parts.push({ type: "text", value: text.slice(i, m.index) });
+    parts.push({ type: "code", value: m[2] });
+    i = m.index + m[0].length;
+  }
+  if (i < text.length) parts.push({ type: "text", value: text.slice(i) });
+  return parts.map(p => {
+    if (p.type === "code") return `<pre><code>${esc(p.value)}</code></pre>`;
+    return renderBlock(p.value);
+  }).join("");
+}
+
+function extractText(content) {
+  if (!content) return "";
+  if (typeof content === "string") return content;
+  if (Array.isArray(content)) {
+    return content.filter(b => b && (b.type === "text" || typeof b.text === "string"))
+                  .map(b => b.text || "").join("");
+  }
+  if (typeof content === "object" && typeof content.text === "string") return content.text;
+  return "";
+}
+
+// ── Tab model ──────────────────────────────────────────────────────────────
+function makeTab({ id, sessionKey, displayName, selectedModel, lastSentModel, scrollTop }) {
+  const pane = document.createElement("div");
+  pane.className = "transcript-pane";
+  return {
+    id, sessionKey, displayName,
+    selectedModel: selectedModel || DEFAULT_MODEL,
+    lastSentModel: lastSentModel || null,
+    activeRunId: null,
+    runs: new Map(),
+    runCompletions: new Map(),
+    paneEl: pane,
+    historyLoaded: false,
+    verboseEnabled: false,
+    dirty: false,
+    scrollTop: typeof scrollTop === "number" ? scrollTop : 0,
+    turnCount: 0,
+    silentRuns: new Set(),
+    // Event buffering — while loading history, queue events to replay AFTER
+    // so they render in the right order and don't get wiped by the pane clear.
+    loadingHistory: false,
+    bufferedEvents: [],
+  };
+}
+
+function currentTab() {
+  return state.tabs.find(t => t.id === state.activeTabId) || null;
+}
+function tabBySession(sk) {
+  return state.tabs.find(t => t.sessionKey === sk) || null;
+}
+function saveTabs() {
+  localStorage.setItem("clawd.tabs", JSON.stringify(state.tabs.map(t => ({
+    id: t.id,
+    sessionKey: t.sessionKey,
+    displayName: t.displayName,
+    selectedModel: t.selectedModel,
+    lastSentModel: t.lastSentModel,
+    scrollTop: t.scrollTop || 0,
+  }))));
+  if (state.activeTabId) localStorage.setItem("clawd.activeTab", state.activeTabId);
+}
+function loadTabsFromStorage() {
+  try {
+    const arr = JSON.parse(localStorage.getItem("clawd.tabs") || "[]");
+    if (!Array.isArray(arr) || !arr.length) return null;
+    return arr.filter(t => t && t.id && t.sessionKey).map(makeTab);
+  } catch { return null; }
+}
+function nextTabName() {
+  const used = new Set(state.tabs.map(t => t.displayName));
+  for (let i = 1; i < 1000; i++) {
+    const n = "new chat " + i;
+    if (!used.has(n)) return n;
+  }
+  return "new chat " + Date.now();
+}
+
+async function createTab({ displayName, sessionKey, selectedModel, switchTo = true } = {}) {
+  const id = "ui-" + shortHex(6);
+  const tab = makeTab({
+    id,
+    sessionKey: sessionKey || ("agent:clawd:tab-" + shortHex(8)),
+    displayName: displayName || nextTabName(),
+    selectedModel: selectedModel || (currentTab()?.selectedModel || DEFAULT_MODEL),
+  });
+  state.tabs.push(tab);
+  $transcript.appendChild(tab.paneEl);
+  renderTabs();
+  saveTabs();
+  if (switchTo) await switchTab(tab.id);
+  return tab;
+}
+
+async function switchTab(id) {
+  const t = state.tabs.find(x => x.id === id);
+  if (!t) return;
+  state.activeTabId = id;
+  state.tabs.forEach(x => x.paneEl.classList.toggle("active", x.id === id));
+  t.dirty = false;
+  const sel = document.getElementById("modelPicker");
+  if (sel) {
+    if ([...sel.options].some(o => o.value === t.selectedModel)) sel.value = t.selectedModel;
+    else { sel.value = DEFAULT_MODEL; t.selectedModel = DEFAULT_MODEL; }
+  }
+  ttsReset();
+  // Restore draft for this tab
+  $input.value = loadDraft(t);
+  autosize($input);
+  requestAnimationFrame(() => $input.focus());
+  setStatus(state.connected ? "ok" : "bad", t.sessionKey);
+  updateSendButton();
+  renderTabs();
+  saveTabs();
+  if (state.connected) {
+    if (!t.verboseEnabled) {
+      try {
+        await rpc("sessions.patch", {
+          key: t.sessionKey,
+          verboseLevel: "on",
+          reasoningLevel: "stream",  // emit live thinking_delta agent events
+        });
+        t.verboseEnabled = true;
+      } catch (e) {
+        console.warn("sessions.patch failed:", e.message);
+      }
+    }
+    if (!t.historyLoaded) await loadHistory(t);
+  }
+  // Restore the per-tab scroll position
+  requestAnimationFrame(() => {
+    const el = getMsgArea();
+    if (!el) return;
+    if (t.scrollTop && t.scrollTop > 0) el.scrollTop = t.scrollTop;
+    else el.scrollTop = el.scrollHeight;
+  });
+}
+
+async function closeTab(id) {
+  const idx = state.tabs.findIndex(x => x.id === id);
+  if (idx < 0) return;
+  const t = state.tabs[idx];
+  if (t.activeRunId && !confirm(`"${t.displayName}" has a run in progress — close anyway?`)) return;
+  t.paneEl.remove();
+  state.tabs.splice(idx, 1);
+  if (state.activeTabId === id) {
+    const next = state.tabs[Math.max(0, idx - 1)];
+    if (next) await switchTab(next.id);
+    else await createTab({ displayName: "new chat 1", sessionKey: "agent:clawd:tab-" + shortHex(8) });
+  } else {
+    renderTabs();
+    saveTabs();
+  }
+}
+
+function renameTab(id) {
+  const t = state.tabs.find(x => x.id === id);
+  if (!t) return;
+  const v = prompt("Rename tab:", t.displayName);
+  if (!v || v.trim() === "" || v === t.displayName) return;
+  t.displayName = v.trim().slice(0, 40);
+  renderTabs();
+  saveTabs();
+}
+
+function renderTabs() {
+  $tabs.innerHTML = "";
+  for (const t of state.tabs) {
+    const el = document.createElement("div");
+    el.className = "tab" + (t.id === state.activeTabId ? " active" : "") + (t.dirty ? " dirty" : "");
+    el.dataset.tabId = t.id;
+    el.title = t.displayName + " — dblclick to rename";
+    el.innerHTML = `<span class="label"></span><button class="close" title="Close">×</button>`;
+    el.querySelector(".label").textContent = t.displayName;
+    el.addEventListener("click", (e) => {
+      if (e.target.classList.contains("close")) { e.stopPropagation(); closeTab(t.id); }
+      else switchTab(t.id);
+    });
+    el.addEventListener("dblclick", (e) => {
+      if (!e.target.classList.contains("close")) { e.preventDefault(); renameTab(t.id); }
+    });
+    $tabs.appendChild(el);
+  }
+  updateBubblePreview();
+}
+
+function updateBubblePreview() {
+  const tab = currentTab();
+  const $lastMsg = document.getElementById("bubbleLastMsg");
+  if (!$lastMsg || !tab) return;
+  const bodies = tab.paneEl ? tab.paneEl.querySelectorAll(".msg.assistant .body") : [];
+  const lastText = bodies.length ? bodies[bodies.length - 1].textContent.trim() : "";
+  $lastMsg.textContent = lastText || tab.displayName;
+}
+
+// ── Auto tab title via server proxy ───────────────────────────────────────
+async function autoTitleTab(tab, seedText) {
+  try {
+    let context;
+    if (seedText) {
+      // Turn 1: we already have the user's message — skip the history RPC
+      context = `user: ${seedText.slice(0, 400)}`;
+    } else {
+      const res = await rpc("chat.history", { sessionKey: tab.sessionKey, limit: 20 });
+      context = (res.messages || res.items || [])
+        .filter(m => m.role === "user" || m.role === "assistant")
+        .map(m => `${m.role}: ${extractText(m.content).slice(0, 400)}`)
+        .join("\n\n");
+    }
+    if (!context) return;
+
+    const resp = await fetch("/api/autotitle", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        messages: [{ role: "user", content: `Give a 2-3 word title for this conversation:\n\n${context}` }],
+      }),
+    });
+    if (!resp.ok) { if (window.__clawdDebug) console.warn("autoTitle HTTP", resp.status); return; }
+    const data = await resp.json();
+    const title = data?.title;
+    if (title && title.length >= 2) {
+      tab.displayName = title;
+      renderTabs();
+      saveTabs();
+    }
+  } catch (e) {
+    if (window.__clawdDebug) console.warn("autoTitleTab:", e);
+  }
+}
+
+// ── Settings panel ─────────────────────────────────────────────────────────
+function openSettings() {
+  $optWsUrl.value = state.config?.wsUrl || "";
+  $optToken.value = state.config?.token || "";
+  document.getElementById("optBankrKey").value = state.config?.bankrKey || "";
+  $optThinking.value = state.thinking;
+  $settings.classList.add("open");
+}
+function closeSettings() { $settings.classList.remove("open"); }
+
+$btnSettings.onclick = openSettings;
+$btnSettingsClose.onclick = closeSettings;
+$btnSettingsSave.onclick = async () => {
+  const cfg = { wsUrl: $optWsUrl.value.trim(), token: $optToken.value.trim(), bankrKey: document.getElementById("optBankrKey").value.trim() };
+  localStorage.setItem("clawd.config", JSON.stringify(cfg));
+  state.thinking = $optThinking.value;
+  localStorage.setItem("clawd.thinking", state.thinking);
+  state.config = cfg;
+  closeSettings();
+  if (state.ws) try { state.ws.close(); } catch {}
+  connect();
+};
+
+// ── Rendering (per-tab) ────────────────────────────────────────────────────
+function renderUserMessage(text, tab, ageMs = 0) {
+  const el = document.createElement("div");
+  el.className = "msg user";
+  el.innerHTML = `<div class="role">You</div><div class="body"></div>`;
+  el.querySelector(".body").innerHTML = renderText(text);
+  tab.paneEl.appendChild(el);
+  applyVisibility(tab.paneEl);
+  return el;
+}
+
+function renderAssistantContainer(tab) {
+  const el = document.createElement("div");
+  el.className = "msg assistant";
+  el.innerHTML = `
+    <div class="body"></div>
+    <div class="tools"></div>
+    <div class="text"></div>
+    <div class="footer-status"></div>
+  `;
+  tab.paneEl.appendChild(el);
+  return el;
+}
+
+const KEEP_VISIBLE_COUNT = 2;
+const REVEAL_HISTORY_MS = 30_000;
+
+function applyVisibility(pane) {
+  if (!pane) return;
+  const msgs = Array.from(pane.querySelectorAll(":scope > .msg"));
+  const hideUpTo = Math.max(0, msgs.length - KEEP_VISIBLE_COUNT);
+  msgs.forEach((el, i) => el.classList.toggle("faded", i < hideUpTo));
+
+  let counter = pane.querySelector(":scope > .hidden-counter");
+  if (hideUpTo > 0) {
+    if (!counter) {
+      counter = document.createElement("div");
+      counter.className = "hidden-counter";
+      counter.title = "Show hidden messages";
+      counter.addEventListener("click", () => revealHistory(pane));
+    }
+    counter.textContent = `[${hideUpTo}]`;
+    const firstVisible = msgs[hideUpTo];
+    if (firstVisible) pane.insertBefore(counter, firstVisible);
+    else pane.appendChild(counter);
+  } else if (counter) {
+    counter.remove();
+  }
+}
+
+function revealHistory(pane, durationMs = REVEAL_HISTORY_MS) {
+  if (!pane) {
+    const tab = currentTab();
+    pane = tab && tab.paneEl;
+  }
+  if (!pane) return;
+  if (pane._revealTimer) clearTimeout(pane._revealTimer);
+  pane.classList.add("revealing");
+  pane._revealTimer = setTimeout(() => {
+    pane.classList.remove("revealing");
+    pane._revealTimer = null;
+  }, durationMs);
+}
+
+// Parse openclaw's "[Sat 2026-04-25 11:57 MDT]" or "[2026-04-25 11:57:43 MDT]"
+// from a user message's raw text. Treats the time as local — close enough for
+// fading old history when the user is on the same machine that sent it.
+function parseHistoryTimestamp(rawText) {
+  if (!rawText) return null;
+  const m = /\[(?:[A-Za-z]{3,9} )?(\d{4}-\d{2}-\d{2}) (\d{2}:\d{2}(?::\d{2})?)/.exec(String(rawText));
+  if (!m) return null;
+  const d = new Date(`${m[1]}T${m[2]}`);
+  return isNaN(d.getTime()) ? null : d.getTime();
+}
+
+function isModelSwitchMsg(text) {
+  return /model (set|switched) to /i.test(text) || /^\/model\s/i.test(text.trim());
+}
+
+function renderSystem(text, tab) {
+  if (isModelSwitchMsg(text)) return null;
+  const el = document.createElement("div");
+  el.className = "msg system";
+  el.textContent = text;
+  tab.paneEl.appendChild(el);
+  return el;
+}
+
+function renderError(text, tab = null) {
+  const t = tab || currentTab();
+  const el = document.createElement("div");
+  el.className = "msg error";
+  el.innerHTML = `<div class="role">Error</div><div class="body"></div>`;
+  el.querySelector(".body").textContent = text;
+  if (t) t.paneEl.appendChild(el);
+  else { console.error(text); alert(text); }
+  return el;
+}
+
+function renderThinkingCard(parent, label, text, startOpen=false) {
+  const card = document.createElement("div");
+  card.className = "thinking-card" + (startOpen ? " open" : "");
+  card.innerHTML = `
+    <div class="hdr">
+      <span class="icon">💭</span>
+      <span class="label"></span>
+      <span class="preview"></span>
+      <span class="chev">›</span>
+    </div>
+    <div class="body-wrap"><div class="body"></div></div>
+  `;
+  card.querySelector(".label").textContent = label || "thinking";
+  if (text) updateThinkingCard(card, text);
+  card.querySelector(".hdr").onclick = () => card.classList.toggle("open");
+  parent.appendChild(card);
+  return card;
+}
+function updateThinkingCard(card, text) {
+  if (!card || typeof text !== "string") return;
+  card.querySelector(".body").textContent = text;
+  // Preview shows the most recent non-empty line so streaming gives a live
+  // "what's it thinking right now" feel even while the card stays collapsed.
+  const lines = text.split("\n");
+  let last = "";
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const s = lines[i].trim();
+    if (s) { last = s; break; }
+  }
+  card.querySelector(".preview").textContent = last.slice(0, 200);
+}
+
+function extractClaudePrompt(cmd) {
+  // Match: claude -p "..." or claude -p '...' or claude --print "..."
+  const m = cmd.match(/claude\s+(?:-p|--print)\s+(?:"((?:[^"\\]|\\.)*)"|'((?:[^'\\]|\\.)*)')/);
+  if (!m) return null;
+  return (m[1] || m[2] || "").replace(/\\"/g, '"').replace(/\\'/g, "'").replace(/\\n/g, "\n");
+}
+
+function renderToolCard(parent, toolName, input, startOpen=false) {
+  const card = document.createElement("div");
+  card.className = "tool-card" + (startOpen ? " open" : "");
+
+  const cmd = (input && typeof input === "object") ? (input.command || "") : "";
+  const isClaudeCode = toolName === "exec" && /^\s*claude\s+(-p|--print)\b/.test(cmd);
+
+  card.innerHTML = `
+    <div class="hdr">
+      <span class="icon">${isClaudeCode ? "🧠" : "🔧"}</span>
+      <span class="name"></span>
+      <span class="status running">running</span>
+      <span class="chev">›</span>
+    </div>
+    <div class="body-wrap">
+      <div class="section input-section"><div class="label"></div><pre></pre></div>
+      <div class="section output-section" style="display:none"><div class="label">output</div><pre></pre></div>
+    </div>
+  `;
+  if (isClaudeCode) card.classList.add("claude-code");
+  card.querySelector(".name").textContent = isClaudeCode ? "Claude Code" : (toolName || "tool");
+  const inputLabel = card.querySelector(".input-section .label");
+  const inputPre = card.querySelector(".input-section pre");
+  if (isClaudeCode) {
+    const prompt = extractClaudePrompt(cmd);
+    inputLabel.textContent = "prompt";
+    inputPre.textContent = prompt || cmd;
+  } else {
+    inputLabel.textContent = "input";
+    inputPre.textContent = formatToolData(input);
+  }
+  card.querySelector(".hdr").onclick = () => card.classList.toggle("open");
+  parent.appendChild(card);
+  return card;
+}
+
+function formatToolData(v) {
+  if (v === undefined || v === null) return "";
+  if (typeof v === "string") return v;
+  try { return JSON.stringify(v, null, 2); } catch { return String(v); }
+}
+
+function updateToolResult(card, output, isError=false) {
+  const statusEl = card.querySelector(".status");
+  statusEl.className = "status " + (isError ? "error" : "done");
+  statusEl.textContent = isError ? "error" : "done";
+  const outSec = card.querySelector(".output-section");
+  outSec.style.display = "block";
+  outSec.querySelector("pre").textContent = formatToolData(output);
+}
+
+function ensureTurn(runId, tab) {
+  let t = tab.runs.get(runId);
+  if (t) return t;
+  const container = renderAssistantContainer(tab);
+  t = {
+    runId, container,
+    textEl: container.querySelector(".text"),
+    toolsEl: container.querySelector(".tools"),
+    footerEl: container.querySelector(".footer-status"),
+    thinkingEl: null,
+    toolCards: new Map(),
+    lastText: "",
+    lastThinking: "",
+    startedAt: Date.now(),
+    state: "working",
+    tickerId: null,
+  };
+  tab.runs.set(runId, t);
+  // (Note: TTS state is reset in onSend at user-submit time, NOT here.
+  // Resetting here would abort the in-flight Haiku ack fetch via
+  // _ttsAborts, since the first WS event for a new run typically lands
+  // ~300ms after user-send — well before Haiku has had time to respond.)
+  // Working indicator + 1s elapsed ticker
+  t.footerEl.innerHTML = `<div class="working"><span class="blink"></span><span class="label">working</span><span class="elapsed"></span></div>`;
+  const labelEl = t.footerEl.querySelector(".label");
+  const elapsedEl = t.footerEl.querySelector(".elapsed");
+  const tick = () => {
+    if (!tab.runs.has(runId)) { clearInterval(t.tickerId); return; }
+    const secs = Math.floor((Date.now() - t.startedAt) / 1000);
+    elapsedEl.textContent = ` · ${secs}s`;
+  };
+  tick();
+  t.tickerId = setInterval(tick, 1000);
+  // Promote "working" → "responding" once we've actually seen content
+  t.markResponding = () => {
+    if (t.state === "working") {
+      t.state = "responding";
+      labelEl.textContent = "responding";
+    }
+  };
+  if (tab === currentTab()) scrollToBottom(true);
+  return t;
+}
+
+function markDirtyIfBackground(tab) {
+  if (tab !== currentTab() && !tab.dirty) {
+    tab.dirty = true;
+    renderTabs();
+  }
+}
+
+// Reconcile a turn's UI with the canonical assistant message from server
+// history. Used after chat:final to pull in thinking/tool data that the
+// delta stream didn't carry (common for non-Anthropic models via OpenAI-
+// compat APIs — they only stream text, openclaw extracts thinking later).
+async function syncTurnFromHistory(tab, turn) {
+  if (!turn || !turn.container || !turn.container.isConnected) return;
+  try {
+    const res = await rpc("chat.history", { sessionKey: tab.sessionKey, limit: 4 });
+    const msgs = res.messages || res.items || [];
+    // Find the most recent assistant message (corresponds to this just-final run)
+    for (let i = msgs.length - 1; i >= 0; i--) {
+      const m = msgs[i];
+      if (m.role !== "assistant" || !Array.isArray(m.content)) continue;
+      for (const b of m.content) {
+        if (b?.type === "thinking" && typeof b.thinking === "string") {
+          if (!turn.thinkingEl) {
+            turn.thinkingEl = renderThinkingCard(turn.container, "thinking", b.thinking, false);
+            turn.container.insertBefore(turn.thinkingEl, turn.toolsEl);
+          } else {
+            updateThinkingCard(turn.thinkingEl, b.thinking);
+          }
+        }
+        // (tool_use blocks should already be rendered from agent events)
+      }
+      // If the streaming text was empty/partial, take the canonical text too
+      const finalText = extractText(m.content);
+      if (finalText && (!turn.lastText || turn.lastText.length < finalText.length)) {
+        turn.lastText = finalText;
+        turn.textEl.innerHTML = renderText(finalText);
+      }
+      break;
+    }
+  } catch (e) {
+    if (window.__clawdDebug) console.warn("syncTurnFromHistory:", e);
+  }
+}
+
+// ── Event handlers ─────────────────────────────────────────────────────────
+function handleChatEvent(payload) {
+  const { runId, sessionKey, state: chatState, message, errorMessage } = payload;
+  if (window.__clawdDebug) console.debug("[chat]", chatState, sessionKey, message?.content);
+  const tab = sessionKey ? tabBySession(sessionKey) : null;
+  if (!tab) return;
+  if (tab.loadingHistory) {
+    // Queue this event; we'll replay it once history finishes rendering so the
+    // DOM order stays correct (history first, then in-flight content below).
+    tab.bufferedEvents.push({ kind: "chat", payload });
+    return;
+  }
+
+  if (tab.silentRuns.has(runId)) {
+    if (chatState === "final" || chatState === "aborted" || chatState === "error") {
+      tab.silentRuns.delete(runId);
+      tab.activeRunId = null;
+      removePendingByRunId(tab, runId);
+      resolveTabRunCompletion(tab, runId, chatState === "final" ? null : chatState);
+      if (tab === currentTab()) updateSendButton();
+    }
+    return;
+  }
+
+  const t = ensureTurn(runId, tab);
+
+  if (chatState === "delta" || chatState === "final") {
+    if (message) {
+      const text = extractText(message.content);
+      if (text) {
+        if (chatState === "delta") clawdVid.chatting(text);
+        t.lastText = text; t.textEl.innerHTML = renderText(text);
+        if (tab === currentTab()) ttsFeed(text, chatState === "final");
+      }
+      if (Array.isArray(message.content)) {
+        for (const b of message.content) {
+          if (b && (b.type === "tool_use" || b.type === "toolCall") && b.id) {
+            if (!t.toolCards.has(b.id)) {
+              const card = renderToolCard(t.toolsEl, b.name, b.input || b.arguments);
+              t.toolCards.set(b.id, card);
+            }
+          }
+          if (b && b.type === "thinking" && typeof b.thinking === "string") {
+            if (!t.thinkingEl) {
+              t.thinkingEl = renderThinkingCard(t.container, "thinking", b.thinking);
+              t.container.insertBefore(t.thinkingEl, t.toolsEl);
+            } else {
+              updateThinkingCard(t.thinkingEl, b.thinking);
+            }
+          }
+        }
+      }
+    }
+    markDirtyIfBackground(tab);
+  }
+
+  if (chatState === "delta") {
+    t.markResponding && t.markResponding();
+  }
+  if (chatState === "final") {
+    if (t.tickerId) clearInterval(t.tickerId);
+    t.footerEl.innerHTML = "";
+    tab.activeRunId = null;
+    removePendingByRunId(tab, runId);
+    resolveTabRunCompletion(tab, runId, null);
+    tab.turnCount = (tab.turnCount || 0) + 1;
+    if (tab.turnCount === 3 || tab.turnCount === 9) autoTitleTab(tab).catch(() => {});
+    const usedTools = t.toolCards && t.toolCards.size > 0;
+    clawdVid.chatting(t.lastText || "", {
+      firstEver: tab.turnCount === 1,
+      satisfied: usedTools,
+    });
+    // Sync thinking + tool blocks from server-side history. For non-Anthropic
+    // models, deltas don't carry thinking content — it only appears in the
+    // persisted message after the run completes.
+    syncTurnFromHistory(tab, t).catch(() => {});
+    applyVisibility(tab.paneEl);
+  } else if (chatState === "aborted") {
+    if (t.tickerId) clearInterval(t.tickerId);
+    t.footerEl.innerHTML = `<div style="color:var(--warn); font-size:12px">⏹ aborted</div>`;
+    tab.activeRunId = null;
+    removePendingByRunId(tab, runId);
+    resolveTabRunCompletion(tab, runId, "aborted");
+  } else if (chatState === "error") {
+    if (t.tickerId) clearInterval(t.tickerId);
+    t.footerEl.innerHTML = `<div style="color:var(--bad); font-size:12px">⚠ ${errorMessage || "error"}</div>`;
+    tab.activeRunId = null;
+    removePendingByRunId(tab, runId);
+    resolveTabRunCompletion(tab, runId, errorMessage || "error");
+  }
+
+  if (tab === currentTab()) {
+    updateSendButton();
+    if (chatState === "delta" || chatState === "final") scrollToBottom();
+  }
+}
+
+function handleAgentEvent(payload) {
+  const { runId, sessionKey, stream, data } = payload;
+  if (window.__clawdDebug) console.debug("[agent]", stream, sessionKey, data);
+  let tab = sessionKey ? tabBySession(sessionKey) : null;
+  if (!tab) tab = state.tabs.find(x => x.runs.has(runId)) || null;
+  if (!tab) return;
+  if (tab.loadingHistory) {
+    tab.bufferedEvents.push({ kind: "agent", payload });
+    return;
+  }
+  const t = ensureTurn(runId, tab);
+
+  if (stream === "tool") {
+    const callId = data?.toolCallId || data?.id || ("call-" + Date.now());
+    const phase = data?.phase;
+    if (phase === "start") {
+      const baseName = data?.name || data?.toolName || "tool";
+      clawdVid.building(baseName);
+      if (!t.toolCards.has(callId)) {
+        const argPreview = data?.args?.command || data?.args?.path || data?.args?.url;
+        const title = argPreview ? `${baseName}: ${String(argPreview).slice(0, 60)}` : baseName;
+        const card = renderToolCard(t.toolsEl, title, data?.args || data?.input);
+        t.toolCards.set(callId, card);
+      }
+      // Have Haiku narrate the tool call, casually, while it's running —
+      // unless he's reading his own brain (clawd-md / CLAUDE.md), in which
+      // case just emit a short thinking sound (no narration of the path).
+      if (_ttsEnabled && tab === currentTab() && !_ttsRealArrived && _fillerLastToolId !== callId) {
+        _fillerLastToolId = callId;
+        const inputObj = data?.args || data?.input;
+        if (isBrainFileRead(baseName, inputObj)) {
+          if (_fillerInflight === 0) ttsEnqueue(pickBrainSound(), "tool");
+        } else {
+          let inputStr = "";
+          try { inputStr = inputObj ? JSON.stringify(inputObj).slice(0, 300) : ""; } catch {}
+          fillerSpeak({ kind: "tool", toolName: baseName, toolInput: inputStr });
+        }
+      }
+    } else if (phase === "result" || phase === "end") {
+      const card = t.toolCards.get(callId);
+      const out = data?.output ?? data?.result ?? data?.text ?? data?.content ?? data?.meta ?? "(completed)";
+      const isError = !!data?.isError || !!data?.error;
+      if (card) updateToolResult(card, out, isError);
+      else {
+        const orphan = renderToolCard(t.toolsEl, data?.name || "(result)", out, true);
+        updateToolResult(orphan, out, isError);
+      }
+    }
+  } else if (stream === "thinking" || stream === "reasoning") {
+    const text = data?.text || data?.content;
+    if (text) {
+      if (!t.thinkingEl) {
+        t.thinkingEl = renderThinkingCard(t.container, stream, text);
+        t.container.insertBefore(t.thinkingEl, t.toolsEl);
+      } else {
+        updateThinkingCard(t.thinkingEl, text);
+      }
+      // Narrate the reasoning out loud. Coalesce rapid deltas into one
+      // Haiku call: append to a buffer, fire either when the buffer crosses
+      // ~200 chars or 1.2s after the last delta, whichever comes first.
+      if (_ttsEnabled && tab === currentTab() && !_ttsRealArrived) {
+        const newPart = text.slice(_fillerLastThinkingLen);
+        if (newPart) {
+          _fillerLastThinkingLen = text.length;
+          _fillerThinkingPending += newPart;
+          const flush = () => {
+            if (!_fillerThinkingPending || _ttsRealArrived) {
+              _fillerThinkingPending = "";
+              return;
+            }
+            const snip = _fillerThinkingPending.slice(0, 800);
+            _fillerThinkingPending = "";
+            fillerSpeak({ kind: "thinking", thinkingText: snip });
+          };
+          clearTimeout(_fillerThinkingTimer);
+          if (_fillerThinkingPending.length >= 200) {
+            _fillerThinkingTimer = null;
+            flush();
+          } else {
+            _fillerThinkingTimer = setTimeout(flush, 1200);
+          }
+        }
+      }
+    }
+  }
+
+  if (t.markResponding) t.markResponding();
+  markDirtyIfBackground(tab);
+  if (tab === currentTab()) scrollToBottom();
+}
+
+// ── WebSocket connection + RPC ─────────────────────────────────────────────
+function connect() {
+  if (!state.config?.wsUrl) {
+    setStatus("bad", "no gateway URL");
+    return;
+  }
+  setStatus("connecting", "connecting…");
+  state.connectNonce = null;
+
+  let ws;
+  try { ws = new WebSocket(state.config.wsUrl); }
+  catch (e) {
+    setStatus("bad", "bad url");
+    renderError("Failed to open WebSocket: " + e.message);
+    return;
+  }
+  state.ws = ws;
+
+  ws.onopen = async () => {
+    try {
+      const ident = await getOrCreateIdentity();
+      const scopes = ["operator.read", "operator.write", "operator.admin"];
+      const clientId = "openclaw-control-ui";
+      const clientMode = "ui";
+      const role = "operator";
+      const device = await signDevicePayload(ident, {
+        clientId, clientMode, role, scopes, token: state.config.token || null, nonce: state.connectNonce || null,
+      });
+      await rpc("connect", {
+        minProtocol: 3,
+        maxProtocol: 3,
+        client: { id: clientId, displayName: "clawd-web", version: "0.1.0", platform: "web", mode: clientMode },
+        role, scopes,
+        caps: ["tool-events"],
+        auth: state.config.token ? { token: state.config.token } : undefined,
+        locale: navigator.language || "en-US",
+        userAgent: navigator.userAgent,
+        device,
+      });
+      onConnected();
+    } catch (err) {
+      setStatus("bad", "auth failed");
+      renderError("Handshake failed: " + (err.message || err));
+    }
+  };
+
+  ws.onmessage = (ev) => {
+    let frame;
+    try { frame = JSON.parse(ev.data); } catch { console.warn("bad frame", ev.data); return; }
+    onFrame(frame);
+  };
+
+  ws.onclose = (ev) => {
+    setStatus("bad", `disconnected (${ev.code})`);
+    state.connected = false;
+    for (const t of state.tabs) t.activeRunId = null;
+    updateSendButton();
+    if (ev.code === 1008) {
+      renderError(
+        "Gateway rejected the connection (1008). Likely causes:\n" +
+        "  • Our origin isn't in gateway.controlUi.allowedOrigins\n" +
+        "  • Device pairing is required (see `openclaw devices list`)\n" +
+        "  • Auth token is wrong\n\n" +
+        "See the clawd-web README for the fix."
+      );
+      return;
+    }
+    if (ev.code !== 1000) {
+      setTimeout(() => { if (!state.connected) connect(); }, 2000);
+    }
+  };
+
+  ws.onerror = () => {};
+}
+
+// ── Ed25519 device identity ────────────────────────────────────────────────
+async function getOrCreateIdentity() {
+  if (state.identity) return state.identity;
+  const stored = localStorage.getItem("clawd.identity");
+  if (stored) {
+    try {
+      const obj = JSON.parse(stored);
+      const privateKey = await crypto.subtle.importKey("jwk", obj.privJwk, { name: "Ed25519" }, true, ["sign"]);
+      state.identity = { privateKey, deviceId: obj.deviceId, publicKey: obj.publicKey };
+      return state.identity;
+    } catch (e) { console.warn("stored identity unusable, regenerating:", e); }
+  }
+  let kp;
+  try { kp = await crypto.subtle.generateKey({ name: "Ed25519" }, true, ["sign", "verify"]); }
+  catch (e) { throw new Error("Ed25519 not supported in this browser — needs Chrome 112+ / Safari 17+ / Firefox 129+"); }
+  const rawPub = new Uint8Array(await crypto.subtle.exportKey("raw", kp.publicKey));
+  const deviceIdBytes = new Uint8Array(await crypto.subtle.digest("SHA-256", rawPub));
+  const deviceId = bytesToHex(deviceIdBytes);
+  const publicKey = bytesToB64Url(rawPub);
+  const privJwk = await crypto.subtle.exportKey("jwk", kp.privateKey);
+  localStorage.setItem("clawd.identity", JSON.stringify({ deviceId, publicKey, privJwk }));
+  state.identity = { privateKey: kp.privateKey, deviceId, publicKey };
+  return state.identity;
+}
+
+async function signDevicePayload(identity, { clientId, clientMode, role, scopes, token, nonce }) {
+  const signedAtMs = Date.now();
+  const version = nonce ? "v2" : "v1";
+  const parts = [version, identity.deviceId, clientId, clientMode, role, scopes.join(","), String(signedAtMs), token || ""];
+  if (version === "v2") parts.push(nonce || "");
+  const payload = parts.join("|");
+  const sigBuf = await crypto.subtle.sign({ name: "Ed25519" }, identity.privateKey, new TextEncoder().encode(payload));
+  const out = { id: identity.deviceId, publicKey: identity.publicKey, signature: bytesToB64Url(new Uint8Array(sigBuf)), signedAt: signedAtMs };
+  if (nonce) out.nonce = nonce;
+  return out;
+}
+
+function bytesToHex(u8) { return Array.from(u8, b => b.toString(16).padStart(2, "0")).join(""); }
+function bytesToB64Url(u8) {
+  let s = "";
+  for (let i = 0; i < u8.length; i++) s += String.fromCharCode(u8[i]);
+  return btoa(s).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+}
+
+function onFrame(frame) {
+  if (frame.type === "res") {
+    const p = state.pending.get(frame.id);
+    if (p) {
+      state.pending.delete(frame.id);
+      if (frame.ok) p.resolve(frame.payload);
+      else p.reject(new Error(frame.error?.message || "rpc error"));
+    }
+    return;
+  }
+  if (frame.type === "event") {
+    switch (frame.event) {
+      case "chat":  return handleChatEvent(frame.payload);
+      case "agent": return handleAgentEvent(frame.payload);
+      case "connect.challenge":
+        if (frame.payload?.nonce) state.connectNonce = frame.payload.nonce;
+        return;
+      case "tick": case "presence": case "health": return;
+      default:
+        if (window.__clawdDebug) console.debug("[unhandled event]", frame.event, frame.payload);
+        return;
+    }
+  }
+}
+
+function rpc(method, params) {
+  return new Promise((resolve, reject) => {
+    if (!state.ws || state.ws.readyState !== WebSocket.OPEN) return reject(new Error("not connected"));
+    const id = "r" + (++state.reqSeq);
+    state.pending.set(id, { resolve, reject });
+    state.ws.send(JSON.stringify({ type: "req", id, method, params }));
+    setTimeout(() => {
+      if (state.pending.has(id)) { state.pending.delete(id); reject(new Error(method + " timed out")); }
+    }, 60000);
+  });
+}
+
+async function onConnected() {
+  state.connected = true;
+  updateSendButton();
+  const tab = currentTab();
+  if (!tab) { setStatus("bad", "(no tab)"); return; }
+  setStatus("ok", tab.sessionKey);
+  try {
+    await rpc("sessions.patch", {
+      key: tab.sessionKey,
+      verboseLevel: "on",
+      reasoningLevel: "stream",  // emit live thinking_delta agent events
+    });
+    tab.verboseEnabled = true;
+  } catch (e) { console.warn("sessions.patch failed:", e.message); }
+  await loadHistory(tab);
+}
+
+// ── Pending-message persistence ────────────────────────────────────────────
+// User-typed messages are kept in sessionStorage so a reload mid-flight doesn't
+// lose the prompt. Each entry is tagged with the runId after chat.send returns
+// so we can pop it deterministically on chat:final, instead of fuzzy-matching
+// against history (which adds timestamp prefixes that break equality checks).
+const PENDING_KEY = "clawd.pending";
+const PENDING_TTL_MS = 5 * 60 * 1000;  // 5 minutes — drop anything older
+
+function _readAllPending() {
+  try { return JSON.parse(sessionStorage.getItem(PENDING_KEY) || "{}"); } catch { return {}; }
+}
+function _writeAllPending(obj) {
+  try { sessionStorage.setItem(PENDING_KEY, JSON.stringify(obj)); } catch {}
+}
+function getPendingForTab(tab) { return _readAllPending()[tab.sessionKey] || []; }
+function setPendingForTab(tab, list) {
+  const all = _readAllPending();
+  if (list.length === 0) delete all[tab.sessionKey]; else all[tab.sessionKey] = list;
+  _writeAllPending(all);
+}
+function pushPending(tab, text) {
+  const list = getPendingForTab(tab);
+  const id = "p-" + Date.now() + "-" + Math.random().toString(36).slice(2, 6);
+  list.push({ id, text, ts: Date.now(), runId: null });
+  setPendingForTab(tab, list);
+  return id;
+}
+function setPendingRunId(tab, pendingId, runId) {
+  const list = getPendingForTab(tab);
+  const p = list.find(x => x.id === pendingId);
+  if (p) { p.runId = runId; setPendingForTab(tab, list); }
+}
+function removePendingById(tab, pendingId) {
+  const list = getPendingForTab(tab);
+  const remaining = list.filter(p => p.id !== pendingId);
+  if (remaining.length !== list.length) setPendingForTab(tab, remaining);
+}
+function removePendingByRunId(tab, runId) {
+  if (!runId) return;
+  const list = getPendingForTab(tab);
+  const remaining = list.filter(p => p.runId !== runId);
+  if (remaining.length !== list.length) setPendingForTab(tab, remaining);
+}
+function purgeOldPending(tab) {
+  const now = Date.now();
+  const list = getPendingForTab(tab);
+  const fresh = list.filter(p => now - (p.ts || 0) < PENDING_TTL_MS);
+  if (fresh.length !== list.length) setPendingForTab(tab, fresh);
+}
+function clearPendingForTab(tab) { setPendingForTab(tab, []); }
+// Openclaw bundles user messages with optional system-injection lines
+// (e.g. "System: [...] Model switched to X") AND timestamp prefixes
+// (e.g. "[Sat 2026-04-25 11:57 MDT] gm"). This extracts ONLY what the user
+// actually typed, by taking everything after the LAST timestamp bracket.
+// Examples:
+//   "[Sat 2026-04-25 11:57 MDT] gm"                                  → "gm"
+//   "System: [2026-04-25 11:57:43 MDT] Model switched to X.\n\n\n[Sat 2026-04-25 11:57 MDT] gm"
+//                                                                    → "gm"
+//   "gm" (no prefix)                                                 → "gm"
+function extractUserTypedText(rawText) {
+  if (!rawText) return "";
+  const text = String(rawText);
+  // Match brackets like "[Sat 2026-04-25 11:57 MDT]" or "[2026-04-25 11:57:43 MDT]"
+  const re = /\[(?:[A-Za-z]{3,9} )?\d{4}-\d{2}-\d{2} \d{2}:\d{2}(?::\d{2})?(?: [A-Z]{2,5})?\]/g;
+  let lastMatch = null, m;
+  while ((m = re.exec(text)) !== null) lastMatch = m;
+  if (lastMatch) {
+    return text.slice(lastMatch.index + lastMatch[0].length).trim();
+  }
+  // No timestamp wrapper — try stripping "System: [...] ..." prefix line
+  const sysStripped = text.replace(/^System:\s*\[[^\]]+\][^\n]*\n+/, "").trim();
+  return sysStripped || text.trim();
+}
+
+function _normalizeUserText(t) {
+  return extractUserTypedText(t).toLowerCase();
+}
+
+
+// ── History load ───────────────────────────────────────────────────────────
+async function loadHistory(tab) {
+  // Mark loading so concurrent chat/agent events get buffered (avoid race
+  // where mid-flight events render an assistant container before history,
+  // leaving DOM in wrong order or orphan run entries after pane clear).
+  tab.loadingHistory = true;
+  tab.bufferedEvents = [];
+  tab.paneEl.innerHTML = "";
+  tab.runs.clear();  // any stale turn entries from a prior connection
+  try {
+    const res = await rpc("chat.history", { sessionKey: tab.sessionKey, limit: 100 });
+    const msgs = res.messages || res.items || [];
+    if (msgs.length === 0) {
+      const el = document.createElement("div");
+      el.className = "empty";
+      el.innerHTML = `<h2>${tab.displayName}</h2><p>session: <code>${tab.sessionKey}</code><br/>no history yet — say something below.</p>`;
+      tab.paneEl.appendChild(el);
+      tab.historyLoaded = true;
+      return;
+    }
+
+    // Pair tool_use blocks with their tool_result outputs so the rendered
+    // history shows the same nice card view as live streaming. Handles BOTH
+    // the Anthropic shape (tool_use_id on block) and the openclaw shape
+    // (role="toolResult" with toolCallId at message level).
+    const toolResults = new Map();
+    for (const m of msgs) {
+      const c = m.content;
+      if (Array.isArray(c)) {
+        for (const b of c) {
+          if (b?.type === "tool_result" && b.tool_use_id) toolResults.set(b.tool_use_id, b);
+        }
+      }
+      if (m.role === "tool" && m.tool_use_id) toolResults.set(m.tool_use_id, m);
+      // openclaw style:
+      if (m.role === "toolResult" && m.toolCallId) toolResults.set(m.toolCallId, m);
+    }
+
+    let lastUserTs = null;
+    for (const m of msgs) {
+      const role = m.role || "system";
+      const content = m.content;
+
+      if (role === "user") {
+        // Skip user messages that are *only* tool_result blocks — they're paired
+        // into the preceding assistant card already.
+        if (Array.isArray(content) && content.length > 0 && content.every(b => b?.type === "tool_result")) continue;
+        // Strip openclaw's "System: ..." injection + timestamp wrappers so
+        // history renders the same as the live view did.
+        const rawText = extractText(content);
+        lastUserTs = parseHistoryTimestamp(rawText) || lastUserTs;
+        const typed = extractUserTypedText(rawText) || rawText || "(empty)";
+        const ageMs = lastUserTs ? Date.now() - lastUserTs : 0;
+        renderUserMessage(typed, tab, ageMs);
+      } else if (role === "assistant") {
+        const assistantText = extractText(content);
+        if (isModelSwitchMsg(assistantText)) continue;
+        const container = renderAssistantContainer(tab);
+        const textEl = container.querySelector(".text");
+        const toolsEl = container.querySelector(".tools");
+        if (Array.isArray(content)) {
+          for (const b of content) {
+            if (b?.type === "thinking" && typeof b.thinking === "string") {
+              const tEl = renderThinkingCard(container, "thinking", b.thinking, false);
+              container.insertBefore(tEl, toolsEl);
+            } else if (b?.type === "tool_use" || b?.type === "toolCall") {
+              const baseName = b.name || "tool";
+              const argSrc = b.input || b.arguments || {};
+              const argPreview = argSrc.command || argSrc.path || argSrc.url;
+              const title = argPreview ? `${baseName}: ${String(argPreview).slice(0, 60)}` : baseName;
+              const card = renderToolCard(toolsEl, title, argSrc);
+              const result = toolResults.get(b.id);
+              if (result) {
+                const out = extractToolResultText(result);
+                const isError = !!(result.is_error || result.isError);
+                updateToolResult(card, out, isError);
+              } else {
+                const statusEl = card.querySelector(".status");
+                statusEl.className = "status done";
+                statusEl.textContent = "done";
+              }
+            }
+          }
+        }
+        if (assistantText) textEl.innerHTML = renderText(assistantText);
+      } else if (role === "tool" || role === "toolResult") {
+        // Tool results are paired into the assistant card above; don't render again.
+        continue;
+      } else {
+        const text = extractText(content);
+        if (text && !isModelSwitchMsg(text)) renderSystem(text, tab);
+      }
+    }
+
+    // Drop any pending messages that already showed up in history; render the rest.
+    purgeOldPending(tab);  // TTL cleanup for orphaned entries
+    const historyUserTextsNorm = new Set(
+      msgs.filter(m => m.role === "user").map(m => _normalizeUserText(extractText(m.content)))
+    );
+    const pending = getPendingForTab(tab);
+    const stillPending = [];
+    for (const p of pending) {
+      const inHistory = historyUserTextsNorm.has(_normalizeUserText(p.text));
+      // Render the user message only if history doesn't already have it.
+      if (!inHistory) renderUserMessage(p.text, tab);
+
+      // CRITICAL: pending entry exists ⇒ chat:final hasn't popped it ⇒ the
+      // response is STILL in flight server-side. Always pre-create the
+      // response container so the user sees a "working" indicator instead of
+      // a gap, regardless of whether the user msg was persisted to history.
+      if (p.runId) {
+        ensureTurn(p.runId, tab);
+        tab.activeRunId = p.runId;
+        stillPending.push(p);  // keep until chat:final fires
+      } else if (!inHistory) {
+        stillPending.push(p);  // no runId yet, keep so we don't drop it
+      }
+      // If runId is null AND text is in history: orphan — drop it.
+    }
+    setPendingForTab(tab, stillPending);
+    if (tab === currentTab()) updateSendButton();
+    applyVisibility(tab.paneEl);
+
+    if (tab === currentTab()) {
+      requestAnimationFrame(() => {
+        const el = getMsgArea();
+        if (!el) return;
+        if (tab.scrollTop && tab.scrollTop > 0) el.scrollTop = tab.scrollTop;
+        else el.scrollTop = el.scrollHeight;
+      });
+    }
+    tab.historyLoaded = true;
+  } catch (e) {
+    renderError("Could not load history: " + e.message, tab);
+  } finally {
+    // Drain buffered events now that history is fully rendered.
+    tab.loadingHistory = false;
+    const buf = tab.bufferedEvents;
+    tab.bufferedEvents = [];
+    for (const ev of buf) {
+      if (ev.kind === "chat") handleChatEvent(ev.payload);
+      else if (ev.kind === "agent") handleAgentEvent(ev.payload);
+    }
+  }
+}
+
+function extractToolResultText(block) {
+  if (!block) return "";
+  const c = block.content;
+  if (typeof c === "string") return c;
+  if (Array.isArray(c)) {
+    return c.map(b => {
+      if (typeof b === "string") return b;
+      if (b?.type === "text") return b.text || "";
+      if (b?.type === "image") return "(image)";
+      return JSON.stringify(b);
+    }).join("\n");
+  }
+  if (typeof block.text === "string") return block.text;
+  return "";
+}
+
+// ── Sending ────────────────────────────────────────────────────────────────
+function updateSendButton() {
+  const tab = currentTab();
+  if (tab && tab.activeRunId) {
+    $btnSend.textContent = "Stop";
+    $btnSend.classList.add("stop");
+    $btnSend.disabled = false;
+  } else {
+    $btnSend.textContent = "Send";
+    $btnSend.classList.remove("stop");
+    $btnSend.disabled = !state.connected;
+  }
+}
+
+function resolveTabRunCompletion(tab, runId, reason) {
+  const r = tab.runCompletions.get(runId);
+  if (!r) return;
+  tab.runCompletions.delete(runId);
+  if (reason) r.reject(new Error(reason));
+  else r.resolve();
+}
+
+async function ensureModelSelected(tab) {
+  if (tab.selectedModel === tab.lastSentModel) return;
+  const model = tab.selectedModel;
+  const res = await rpc("chat.send", {
+    sessionKey: tab.sessionKey,
+    message: `/model ${model}`,
+    deliver: false,
+    idempotencyKey: uuid(),
+  });
+  if (!res?.runId) throw new Error("model-switch send returned no runId");
+  tab.silentRuns.add(res.runId);
+  tab.activeRunId = res.runId;
+  if (tab === currentTab()) updateSendButton();
+  await new Promise((resolve, reject) => {
+    tab.runCompletions.set(res.runId, { resolve, reject });
+  });
+  tab.lastSentModel = model;
+}
+
+async function onSend() {
+  const tab = currentTab();
+  if (!tab) return;
+  if (tab.activeRunId) return onStop();
+  const text = $input.value.trim();
+  if (!text) return;
+  if (!state.connected) { renderError("Not connected", tab); return; }
+
+  const empty = tab.paneEl.querySelector(".empty");
+  if (empty) empty.remove();
+
+  // New turn: clear any in-flight TTS / filler state from the prior turn.
+  ttsReset();
+  // Fire Haiku stall-talk in parallel with the real RPC so the user hears
+  // an ack within ~1s instead of waiting for the main model's first token.
+  // Opening the ack window buffers any real text deltas that arrive before
+  // the ack response — guarantees ack speaks first. Skip entirely for short
+  // messages and bare greetings — the real reply is faster than the stall.
+  if (_ttsEnabled && !shouldSkipAck(text)) {
+    openAckWindow();
+    fillerSpeak({
+      kind: "ack",
+      lastUser: text,
+      history: fillerHistorySnapshot(tab, 3),
+    });
+  }
+
+  scrollToBottom(true);
+  renderUserMessage(text, tab);
+  clawdVid.thinking();
+  if (tab.turnCount === 0) autoTitleTab(tab, text).catch(() => {});
+  const pendingId = pushPending(tab, text);
+  $input.value = "";
+  saveDraft(tab, "");
+  autosize($input);
+
+  try {
+    await ensureModelSelected(tab);
+    const res = await rpc("chat.send", {
+      sessionKey: tab.sessionKey,
+      message: text,
+      thinking: state.thinking,
+      deliver: false,
+      idempotencyKey: uuid(),
+    });
+    if (res?.runId) {
+      tab.activeRunId = res.runId;
+      setPendingRunId(tab, pendingId, res.runId);
+      updateSendButton();
+    }
+  } catch (e) {
+    removePendingById(tab, pendingId);
+    renderError("chat.send failed: " + e.message, tab);
+    tab.activeRunId = null;
+    updateSendButton();
+  }
+}
+
+async function onStop() {
+  const tab = currentTab();
+  if (!tab || !tab.activeRunId) return;
+  try {
+    await rpc("chat.abort", { sessionKey: tab.sessionKey, runId: tab.activeRunId });
+  } catch (e) {
+    renderError("chat.abort failed: " + e.message, tab);
+  }
+}
+
+async function resetTab(tab) {
+  if (!tab) return;
+  if (!confirm(`Reset "${tab.displayName}"? Server transcript will be cleared.`)) return;
+  try {
+    await rpc("sessions.reset", { key: tab.sessionKey, reason: "reset" });
+    tab.runs.clear();
+    tab.activeRunId = null;
+    tab.historyLoaded = false;
+    tab.lastSentModel = null;
+    clearPendingForTab(tab);
+    updateSendButton();
+    await loadHistory(tab);
+  } catch (e) {
+    renderError("sessions.reset failed: " + e.message, tab);
+  }
+}
+
+// ── Click anywhere to focus input ─────────────────────────────────────────
+document.addEventListener("click", (e) => {
+  if ($widget.classList.contains("minimized")) return;
+  if (window.getSelection().toString().length > 0) return;
+  if (!e.target.closest("button, a, input, textarea, select, [role='button']")) {
+    $input.focus();
+  }
+});
+
+// ── Input handling ─────────────────────────────────────────────────────────
+const INPUT_DRAFT_KEY = "clawd.draft";
+function _readDrafts() { try { return JSON.parse(localStorage.getItem(INPUT_DRAFT_KEY) || "{}"); } catch { return {}; } }
+function _writeDrafts(o) { try { localStorage.setItem(INPUT_DRAFT_KEY, JSON.stringify(o)); } catch {} }
+function saveDraft(tab, text) {
+  if (!tab) return;
+  const all = _readDrafts();
+  if (text && text.length) all[tab.sessionKey] = text;
+  else delete all[tab.sessionKey];
+  _writeDrafts(all);
+}
+function loadDraft(tab) {
+  if (!tab) return "";
+  return _readDrafts()[tab.sessionKey] || "";
+}
+
+let _draftSaveTimer = null;
+$input.addEventListener("input", () => {
+  autosize($input);
+  clearTimeout(_draftSaveTimer);
+  _draftSaveTimer = setTimeout(() => saveDraft(currentTab(), $input.value), 200);
+});
+$input.addEventListener("keydown", (e) => {
+  if (e.key === "Enter" && ((e.metaKey || e.ctrlKey) || !e.shiftKey)) {
+    e.preventDefault();
+    onSend();
+  }
+});
+
+document.addEventListener("keydown", (e) => {
+  if (e.key === "n" && e.ctrlKey && e.metaKey) {
+    e.preventDefault();
+    createTab();
+  }
+});
+
+// ── Text-to-speech ─────────────────────────────────────────────────────────
+const $btnSpeak = document.getElementById("btnSpeak");
+let _ttsEnabled = localStorage.getItem("clawd.tts") === "1";
+let _ttsSpokenUpTo = 0;     // char count of fullText already enqueued/spoken
+let _ttsTurnFullText = "";  // latest fullText for picking chat variant
+let _ttsIdleTimer = null;
+let _ttsMode = "browser";   // "elevenlabs" | "openai" | "browser"
+let _ttsAudio = null;       // active HTMLAudioElement (openai mode)
+let _ttsTurnId = 0;         // bumped on every reset; in-flight requests check this
+let _ttsChunkIndex = 0;     // 0 = first chunk this turn (lower split threshold)
+let _ttsQueue = [];         // [{ turnId, blobPromise, kind }] played sequentially
+let _ttsAborts = [];        // active AbortControllers for in-flight /api/tts fetches
+let _ttsDraining = false;   // mutex — only one drain loop active at a time
+let _ttsResolveCurrent = null; // resolves the in-flight playback promise (for reset)
+// Filler / Haiku stall-talk state — see fillerSpeak(). Lives alongside the
+// real-text TTS queue so they share one audio output (no overlap).
+// Ack is special: it's the user's "intro to the thought" and must always play
+// first. We open an "ack window" on user-send and BUFFER real text deltas
+// during it; the window closes when the ack lands (or 2.5s timeout) and
+// buffered real flushes through immediately. Tool/thinking narration is
+// droppable — dies as soon as real arrives.
+let _ttsRealArrived = false;        // first "real" chunk enqueued — drops pending tool/thinking
+let _ttsRealAudioStarted = false;   // first "real" chunk actually started playing
+let _ackWindowOpen = false;         // while true, real ttsFeed() calls are deferred
+let _ackWindowTimer = null;         // timeout that force-closes the window if ack stalls
+let _ackPendingTtsFeed = null;      // latest deferred {fullText, isFinal} call
+let _fillerLastToolId = null;       // last tool callId we've already narrated
+let _fillerLastThinkingLen = 0;     // chars of current thinking stream already consumed
+let _fillerThinkingPending = "";    // not-yet-narrated thinking deltas
+let _fillerThinkingTimer = null;    // debounce timer for thinking narration
+let _fillerInflight = 0;            // # of /api/filler fetches in flight (cap to 1)
+const _ACK_WINDOW_MS = 2500;        // max time real text waits for ack before flushing
+
+function ttsStrip(text) {
+  return text
+    .replace(/```[\s\S]*?```/g, "")          // fenced code blocks
+    .replace(/`[^`]*`/g, "")                  // inline code
+    .replace(/\*\*([^*]+)\*\*/g, "$1")        // bold
+    .replace(/\*([^*]+)\*/g, "$1")            // italic
+    .replace(/__([^_]+)__/g, "$1")            // bold underscore
+    .replace(/_([^_]+)_/g, "$1")              // italic underscore
+    .replace(/^#{1,6}\s+/gm, "")              // headings
+    .replace(/^\s*[-*+]\s+/gm, "")            // bullet points
+    .replace(/^\s*\d+\.\s+/gm, "")            // numbered lists
+    .replace(/\[([^\]]+)\]\([^)]+\)/g, "$1")  // links → label only
+    .replace(/[>|]/g, "")                      // blockquotes, tables
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function ttsReset() {
+  _ttsSpokenUpTo = 0;
+  _ttsChunkIndex = 0;
+  _ttsTurnFullText = "";
+  _ttsTurnId++;             // invalidate every in-flight chunk
+  _ttsQueue = [];
+  _ttsRealArrived = false;
+  _ttsRealAudioStarted = false;
+  _ackWindowOpen = false;
+  clearTimeout(_ackWindowTimer);
+  _ackWindowTimer = null;
+  _ackPendingTtsFeed = null;
+  _fillerLastToolId = null;
+  _fillerLastThinkingLen = 0;
+  _fillerThinkingPending = "";
+  _fillerInflight = 0;
+  clearTimeout(_fillerThinkingTimer);
+  _fillerThinkingTimer = null;
+  clearTimeout(_ttsIdleTimer);
+  speechSynthesis.cancel();
+  _ttsAborts.forEach(ac => { try { ac.abort(); } catch {} });
+  _ttsAborts = [];
+  if (_ttsAudio) {
+    try { _ttsAudio.pause(); } catch {}
+    _ttsAudio.src = "";
+    _ttsAudio = null;
+  }
+  // Unblock any drain loop awaiting the (now-stopped) audio.
+  if (_ttsResolveCurrent) { const r = _ttsResolveCurrent; _ttsResolveCurrent = null; r(); }
+}
+
+async function ttsFetchChunk(text, turnId) {
+  const ac = new AbortController();
+  _ttsAborts.push(ac);
+  try {
+    const res = await fetch("/api/tts", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ text }),
+      signal: ac.signal,
+    });
+    if (!res.ok) throw new Error(`tts ${res.status}: ${await res.text()}`);
+    if (turnId !== _ttsTurnId) return null;
+    return await res.blob();
+  } catch (e) {
+    if (e.name !== "AbortError") console.warn("[tts]", e.message);
+    return null;
+  } finally {
+    const i = _ttsAborts.indexOf(ac);
+    if (i >= 0) _ttsAborts.splice(i, 1);
+  }
+}
+
+function ttsPlayBlob(blob, kind) {
+  return new Promise(resolve => {
+    const url = URL.createObjectURL(blob);
+    const audio = new Audio(url);
+    audio.__kind = kind;
+    _ttsAudio = audio;
+    let done = false;
+    const finish = () => {
+      if (done) return;
+      done = true;
+      URL.revokeObjectURL(url);
+      if (_ttsAudio === audio) _ttsAudio = null;
+      if (_ttsResolveCurrent === finish) _ttsResolveCurrent = null;
+      resolve();
+    };
+    _ttsResolveCurrent = finish;
+    audio.onplay = () => {
+      clearTimeout(_ttsIdleTimer);
+      clawdVid.chatting(_ttsTurnFullText);
+      if (kind === "real") _ttsRealAudioStarted = true;
+      if (kind === "ack") ackTrace("audio.onplay fired — ack is speaking");
+    };
+    audio.onended = () => { if (kind === "ack") ackTrace("audio.onended for ack"); finish(); };
+    audio.onerror = (e) => { if (kind === "ack") ackTrace("audio.onerror for ack", audio.error); finish(); };
+    audio.play().catch((e) => { if (kind === "ack") ackTrace("audio.play() rejected for ack", e.message); finish(); });
+  });
+}
+
+async function ttsDrainQueue() {
+  if (_ttsDraining) return;     // a drain loop is already running — it'll pick up new items
+  _ttsDraining = true;
+  try {
+    while (_ttsEnabled && _ttsQueue.length) {
+      const item = _ttsQueue.shift();
+      if (item.kind === "ack") ackTrace("drain shifted ack", { turnIdMatch: item.turnId === _ttsTurnId, realAudioStarted: _ttsRealAudioStarted });
+      if (item.turnId !== _ttsTurnId) { if (item.kind === "ack") ackTrace("drain DROP ack: turnId mismatch"); continue; }
+      // Drop late tool/thinking once the real answer has begun.
+      if ((item.kind === "tool" || item.kind === "thinking") && _ttsRealArrived) continue;
+      // Drop late ack once real audio has actually started playing.
+      if (item.kind === "ack" && _ttsRealAudioStarted) { ackTrace("drain DROP ack pre-await: realAudioStarted"); continue; }
+      let blob = null;
+      try { blob = await item.blobPromise; } catch {}
+      if (item.kind === "ack") ackTrace("drain awaited ack blob", blob ? `${blob.size} bytes` : "null");
+      if (item.turnId !== _ttsTurnId || !_ttsEnabled || !blob) { if (item.kind === "ack") ackTrace("drain DROP ack: turnId/disabled/no-blob"); continue; }
+      // Re-check after async wait.
+      if ((item.kind === "tool" || item.kind === "thinking") && _ttsRealArrived) continue;
+      if (item.kind === "ack" && _ttsRealAudioStarted) { ackTrace("drain DROP ack post-await: realAudioStarted"); continue; }
+      if (item.kind === "ack") ackTrace("drain calling ttsPlayBlob for ack");
+      await ttsPlayBlob(blob, item.kind);
+      if (item.kind === "ack") ackTrace("drain ack playback done");
+    }
+  } finally {
+    _ttsDraining = false;
+  }
+  if (!_ttsAudio && !_ttsQueue.length) {
+    _ttsIdleTimer = setTimeout(() => clawdVid.idle(true), 250);
+  }
+}
+
+// kind: "real" | "ack" | "tool" | "thinking"
+//   - real:               main model output (default)
+//   - ack:                "intro to the thought" — always plays unless real
+//                         audio has already started; jumps to front of queue.
+//   - tool / thinking:    droppable narration; killed when real arrives.
+// When the first "real" chunk lands, we drop pending tool/thinking from the
+// queue and put a 1.5s grace timer on any currently-playing tool/thinking
+// audio. Ack is exempt — it always plays through.
+function ttsEnqueue(text, kind = "real") {
+  const stripped = ttsStrip(text).trim();
+  if (kind === "ack") ackTrace("ttsEnqueue called", { stripped, realAudioStarted: _ttsRealAudioStarted, ackWindowOpen: _ackWindowOpen });
+  if (!stripped) { if (kind === "ack") ackTrace("DROP: stripped text empty"); return; }
+  // Late tool/thinking after real arrived → drop.
+  if ((kind === "tool" || kind === "thinking") && _ttsRealArrived) return;
+  // Late ack after real has actually started playing → drop.
+  if (kind === "ack" && _ttsRealAudioStarted) { ackTrace("DROP in ttsEnqueue: realAudioStarted"); return; }
+
+  const turnId = _ttsTurnId;
+  const blobPromise = ttsFetchChunk(stripped, turnId);
+  if (kind === "ack") {
+    blobPromise.then(b => ackTrace("ack TTS blob arrived", b ? `${b.size} bytes` : "null/aborted"))
+               .catch(e => ackTrace("ack TTS blob fetch failed", e.message));
+  }
+  const item = { turnId, blobPromise, kind };
+  // Ack jumps to the front so the user hears it before queued real chunks.
+  // (If real audio is already mid-playback, the ack still has to wait for
+  // the current chunk to end — that's intentional, no overlap.)
+  if (kind === "ack") _ttsQueue.unshift(item);
+  else _ttsQueue.push(item);
+
+  if (kind === "real" && !_ttsRealArrived) {
+    _ttsRealArrived = true;
+    // Drop pending tool/thinking; keep ack and real.
+    _ttsQueue = _ttsQueue.filter(it => it.kind === "real" || it.kind === "ack");
+    // Soft-cut tool/thinking mid-playback: give 1.5s grace, then hard-cut.
+    // Ack is exempt — it's short and the user wants to hear it.
+    if (_ttsAudio && (_ttsAudio.__kind === "tool" || _ttsAudio.__kind === "thinking")) {
+      const audio = _ttsAudio;
+      setTimeout(() => {
+        if (_ttsAudio === audio) {
+          try { audio.pause(); } catch {}
+          if (_ttsResolveCurrent) { const r = _ttsResolveCurrent; _ttsResolveCurrent = null; r(); }
+        }
+      }, 1500);
+    }
+  }
+  ttsDrainQueue();
+}
+
+// ── Filler / Haiku stall-talk ──────────────────────────────────────────────
+// Calls /api/filler (Bankr → claude-haiku-4.5) for a quick 1-line voice line
+// while the main model is still composing. Three kinds:
+//   - ack:      fired once on user-send. Just acknowledges, never answers.
+//   - tool:     fired on agent.tool start. Narrates what it's about to do.
+//   - thinking: fired (debounced) on agent.thinking deltas. Paraphrases.
+// Skipped silently if real text has already started or another filler is
+// already in flight (we don't want stacking — ack already covers most stalls).
+// Trace for the ack pipeline. Quiet by default; set window.__clawdDebug=true
+// in the console to re-enable. Prefix is searchable: "[clawd-ack]".
+let _ackTraceStart = 0;
+function ackTrace(...args) {
+  if (!window.__clawdDebug) return;
+  const dt = _ackTraceStart ? `+${Date.now() - _ackTraceStart}ms` : "0ms";
+  console.log(`%c[clawd-ack ${dt}]`, "color:#ff8855;font-weight:bold", ...args);
+}
+
+async function fillerSpeak({ kind, lastUser, toolName, toolInput, thinkingText, history }) {
+  if (kind === "ack") { _ackTraceStart = Date.now(); ackTrace("fillerSpeak ENTER", { ttsEnabled: _ttsEnabled, ttsMode: _ttsMode, realArrived: _ttsRealArrived, realAudioStarted: _ttsRealAudioStarted, ackWindowOpen: _ackWindowOpen, fillerInflight: _fillerInflight }); }
+  if (!_ttsEnabled) { if (kind === "ack") ackTrace("DROP: tts disabled"); return; }
+  if (_ttsMode === "browser") { if (kind === "ack") ackTrace("DROP: tts mode is browser (no /api/tts pipeline)"); return; }
+  // Entry guards (per-kind):
+  //   - ack:               only blocked if real audio already started playing
+  //   - tool / thinking:   blocked once real has arrived OR another filler is in flight
+  if (kind === "ack") {
+    if (_ttsRealAudioStarted) { ackTrace("DROP: real audio already started before ack fired"); return; }
+  } else {
+    if (_ttsRealArrived) return;
+    if (_fillerInflight > 0) return;
+  }
+  const turnId = _ttsTurnId;
+  _fillerInflight++;
+  const ac = new AbortController();
+  _ttsAborts.push(ac);
+  try {
+    if (kind === "ack") ackTrace("fetching /api/filler");
+    const res = await fetch("/api/filler", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ kind, lastUser, toolName, toolInput, thinkingText, history }),
+      signal: ac.signal,
+    });
+    if (kind === "ack") ackTrace("fetch returned", { ok: res.ok, status: res.status });
+    if (!res.ok) {
+      if (kind === "ack") ackTrace("DROP: HTTP not ok", res.status);
+      else if (window.__clawdDebug) console.warn("[filler]", kind, "HTTP", res.status);
+      return;
+    }
+    const data = await res.json();
+    if (kind === "ack") ackTrace("response parsed", { text: data?.text, error: data?.error });
+    if (turnId !== _ttsTurnId || !_ttsEnabled) { if (kind === "ack") ackTrace("DROP: turnId mismatch or tts disabled"); return; }
+    // Exit guards mirror entry guards (state may have advanced during fetch).
+    if (kind === "ack" ? _ttsRealAudioStarted : _ttsRealArrived) {
+      if (kind === "ack") ackTrace("DROP post-fetch: realAudioStarted=true (real audio began playing during ack fetch)");
+      return;
+    }
+    const text = (data?.text || "").trim();
+    if (!text) { if (kind === "ack") ackTrace("DROP: empty text from /api/filler"); return; }
+    if (kind === "ack") ackTrace("calling ttsEnqueue", text);
+    ttsEnqueue(text, kind);   // kind passes through: "ack" | "tool" | "thinking"
+    if (kind === "ack") ackTrace("ttsEnqueue returned, queue length now", _ttsQueue.length);
+  } catch (e) {
+    if (kind === "ack") ackTrace("DROP: exception", e.name, e.message);
+    else if (e.name !== "AbortError" && window.__clawdDebug) console.warn("[filler]", e.message);
+  } finally {
+    _fillerInflight = Math.max(0, _fillerInflight - 1);
+    const i = _ttsAborts.indexOf(ac);
+    if (i >= 0) _ttsAborts.splice(i, 1);
+    if (kind === "ack") {
+      // Always close the ack window when the ack request settles — success,
+      // skip, or error. Buffered real text gets to play.
+      ackTrace("calling closeAckWindow from finally");
+      closeAckWindow("ack-settled");
+    }
+  }
+}
+
+// Open a brief "ack window" right after the user submits. While it's open,
+// real text deltas are buffered so the ack reliably plays first. Closes
+// when the ack lands (fillerSpeak success), the ack fails, or _ACK_WINDOW_MS
+// elapses — whichever comes first. After close, any buffered ttsFeed call
+// is replayed exactly once with the latest cumulative text.
+function openAckWindow() {
+  _ackWindowOpen = true;
+  clearTimeout(_ackWindowTimer);
+  _ackWindowTimer = setTimeout(() => { ackTrace("ack window TIMEOUT (haiku slower than 2.5s)"); closeAckWindow("timeout"); }, _ACK_WINDOW_MS);
+  ackTrace("openAckWindow");
+}
+function closeAckWindow(reason) {
+  if (!_ackWindowOpen) return;
+  _ackWindowOpen = false;
+  clearTimeout(_ackWindowTimer);
+  _ackWindowTimer = null;
+  ackTrace("closeAckWindow", reason, "pendingTtsFeed:", !!_ackPendingTtsFeed);
+  if (_ackPendingTtsFeed) {
+    const { fullText, isFinal } = _ackPendingTtsFeed;
+    _ackPendingTtsFeed = null;
+    ttsFeed(fullText, isFinal);   // window now closed — falls through to normal path
+  }
+}
+
+// Touching clawd-md / CLAUDE.md / .claude / workspace-clawd files is the
+// assistant looking at its own instructions — *thinking*, not doing work.
+// Match ANY tool whose input mentions one of these paths (Read file_path,
+// Bash `cat`/`head`/`grep`, etc.). We just check for the path substring;
+// no need to enumerate command shapes.
+const _BRAIN_PATH_RE = /(clawd-md\/|claude\.md|\.claude\/|workspace-clawd\/)/i;
+const _BRAIN_SOUNDS = ["Hmm.", "Hmmm.", "Mmm.", "Hrmm.", "Hm, lemme see.", "Mm-hmm.", "Mmm, okay."];
+function isBrainFileRead(toolName, toolInput) {
+  let inputStr = "";
+  try {
+    inputStr = typeof toolInput === "string" ? toolInput : JSON.stringify(toolInput || {});
+  } catch { inputStr = String(toolInput || ""); }
+  return _BRAIN_PATH_RE.test(inputStr);
+}
+function pickBrainSound() {
+  return _BRAIN_SOUNDS[Math.floor(Math.random() * _BRAIN_SOUNDS.length)];
+}
+
+// Short messages and bare greetings don't need an ack — the model will
+// answer almost as fast as Haiku could stall, and the ack ends up echoing
+// the greeting back ("gm let me think" feels like an answer, not a stall).
+const _GREETING_RE = /^(gm|gn|gn8|good\s+(morning|night|evening|afternoon|day)|hi|hello|hey|howdy|sup|yo|hiya|greetings|hola|aloha|ok|k|kk|okay|thanks|thx|ty|cool|nice|great|got\s*it|cheers|bye|cya|night|morning)\b[!.?\s]*$/i;
+function shouldSkipAck(text) {
+  const t = (text || "").trim();
+  if (t.length < 10) return true;       // too short to bother
+  if (_GREETING_RE.test(t)) return true; // bare greeting
+  return false;
+}
+
+// Pull the last few user/assistant turns from the DOM as bare text — keeps
+// the Haiku context tight. Each entry: {role, content}.
+function fillerHistorySnapshot(tab, n = 3) {
+  if (!tab || !tab.paneEl) return [];
+  const out = [];
+  const msgs = tab.paneEl.querySelectorAll(".msg.user, .msg.assistant");
+  const take = Math.min(msgs.length, n * 2);
+  for (let i = msgs.length - take; i < msgs.length; i++) {
+    const m = msgs[i];
+    const role = m.classList.contains("user") ? "user" : "assistant";
+    const body = m.querySelector(".text") || m.querySelector(".body");
+    const content = (body?.textContent || "").trim().slice(0, 400);
+    if (content) out.push({ role, content });
+  }
+  return out;
+}
+
+// First chunk: split on any pause (',' ';' ':' '.' '!' '?' '\n') for fast first-audio.
+// Later chunks: full sentence boundary only, for smoother delivery.
+const _TTS_FIRST_RE = /^([\s\S]*?[.,!?;:\n])\s/;
+const _TTS_SENT_RE  = /^([\s\S]*?[.!?\n])\s/;
+// Hard cap so a long unbroken stream doesn't stall forever.
+const _TTS_MAX_CHUNK = 240;
+
+function ttsFeed(fullText, isFinal) {
+  if (!_ttsEnabled) return;
+  // Hold real text while we're waiting for the ack to land. We only stash
+  // the latest cumulative {fullText, isFinal} — closeAckWindow replays it.
+  if (_ackWindowOpen) {
+    if (!_ackPendingTtsFeed) ackTrace("ttsFeed: BUFFERING real text (window open)", fullText.slice(0, 60));
+    _ackPendingTtsFeed = { fullText, isFinal };
+    _ttsTurnFullText = fullText;   // keep video sync up to date even while deferred
+    return;
+  }
+  _ttsTurnFullText = fullText;
+  if (_ttsMode !== "browser") {
+    while (true) {
+      const newPart = fullText.slice(_ttsSpokenUpTo);
+      if (!newPart) return;
+      if (isFinal) {
+        ttsEnqueue(newPart);
+        _ttsSpokenUpTo = fullText.length;
+        _ttsChunkIndex++;
+        return;
+      }
+      const re = _ttsChunkIndex === 0 ? _TTS_FIRST_RE : _TTS_SENT_RE;
+      const m = newPart.match(re);
+      if (m) {
+        ttsEnqueue(m[1]);
+        _ttsSpokenUpTo += m[0].length;
+        _ttsChunkIndex++;
+        continue;            // try to drain more boundaries from same buffer
+      }
+      if (newPart.length >= _TTS_MAX_CHUNK) {
+        const cut = newPart.lastIndexOf(" ", _TTS_MAX_CHUNK);
+        const split = cut > 40 ? cut : _TTS_MAX_CHUNK;
+        ttsEnqueue(newPart.slice(0, split));
+        _ttsSpokenUpTo += split;
+        _ttsChunkIndex++;
+        continue;
+      }
+      return;                // wait for more text
+    }
+  }
+  // ── Browser SpeechSynthesis fallback (unchanged behavior) ──
+  const newPart = fullText.slice(_ttsSpokenUpTo);
+  if (!newPart) return;
+  function mkUtt(text) {
+    const utt = new SpeechSynthesisUtterance(ttsStrip(text));
+    utt.rate = 1.25;
+    utt.onstart = () => { clearTimeout(_ttsIdleTimer); clawdVid.chatting(_ttsTurnFullText); };
+    utt.onend   = () => { _ttsIdleTimer = setTimeout(() => clawdVid.idle(true), 250); };
+    return utt;
+  }
+  if (isFinal) {
+    const rem = newPart.trim();
+    if (rem) speechSynthesis.speak(mkUtt(rem));
+    _ttsSpokenUpTo = fullText.length;
+    return;
+  }
+  const m = newPart.match(/([\s\S]*[.!?\n])\s*/);
+  if (m) {
+    const toSpeak = m[1].trim();
+    if (toSpeak) speechSynthesis.speak(mkUtt(toSpeak));
+    _ttsSpokenUpTo += m[0].length;
+  }
+}
+
+function applyTtsState() {
+  $btnSpeak.classList.toggle("active", _ttsEnabled);
+  $btnSpeak.textContent = _ttsEnabled ? "🔊" : "🔇";
+  const label = _ttsMode === "elevenlabs" ? "ElevenLabs"
+              : _ttsMode === "openai" ? "Onyx"
+              : "TTS";
+  $btnSpeak.title = _ttsEnabled ? `${label} on — click to mute` : `${label} off — click to enable`;
+}
+applyTtsState();
+
+$btnSpeak.addEventListener("click", () => {
+  _ttsEnabled = !_ttsEnabled;
+  localStorage.setItem("clawd.tts", _ttsEnabled ? "1" : "0");
+  applyTtsState();
+  if (!_ttsEnabled) ttsReset();
+});
+
+// ── Always-listening wake-word loop ────────────────────────────────────────
+// Replaces the push-to-talk mic in clawd-web-chat. The recognizer runs
+// continuously and we scan finalized chunks for a wake phrase ("hey claude",
+// "okay claude", a few common mishearings). Once we hear it, we capture the
+// trailing utterance (+ anything that arrives in the next ~SILENCE_MS of
+// quiet) and submit it via the existing onSend() path so all the streaming /
+// TTS / avatar plumbing stays identical.
+//
+// Echo immunity: while clawd is speaking, _ttsAudio is non-null. We ignore
+// any final results during that window plus a short tail, so clawd's own
+// voice can't trigger the wake word.
+
+const $btnMic = document.getElementById("btnMic");
+const $statusPill = document.getElementById("status-pill");
+const $statusLabel = $statusPill ? $statusPill.querySelector(".label") : null;
+
+const WAKE_RE = /\b(hey|okay|ok)[\s,]+(claude|clawd|claud|cloud|clyde|claud[oe])\b/i;
+const SILENCE_MS = 1500;            // how long to wait after wake before submitting
+const ECHO_TAIL_MS = 800;            // ignore SR for this long after TTS audio ends
+const RESTART_DELAY_MS = 250;        // backoff before restarting after onend
+
+let _recog = null;
+let _wakeArmed = false;       // wake word heard; capturing the prompt
+let _wakeBuf = "";            // accumulated post-wake-word transcript
+let _silenceTimer = null;
+let _restartTimer = null;
+let _lastSpokeTs = 0;         // Date.now() of last TTS audio activity (echo gate)
+let _wakeManuallyPaused = false;  // user clicked the mic to take over
+
+function setPillState(state, label) {
+  if (!$statusPill) return;
+  $statusPill.classList.remove("listening", "armed", "speaking", "thinking", "error");
+  $statusPill.classList.add(state);
+  if (label && $statusLabel) $statusLabel.textContent = label;
+}
+
+function inEchoWindow() {
+  if (_ttsAudio) return true;
+  return _lastSpokeTs && (Date.now() - _lastSpokeTs) < ECHO_TAIL_MS;
+}
+
+function startWakeRecog() {
+  if (_recog) return;
+  if (_wakeManuallyPaused) return;
+  const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+  if (!SR) {
+    setPillState("error", "speech recognition unsupported (use Chrome)");
+    console.warn("SpeechRecognition unavailable — wake word disabled.");
+    return;
+  }
+  const r = new SR();
+  r.continuous = true;
+  r.interimResults = true;
+  r.lang = "en-US";
+
+  r.onstart = () => {
+    if (!_wakeArmed) setPillState("listening", 'listening for "hey claude"');
+    clawdVid.idle(true);
+  };
+
+  r.onresult = (e) => {
+    if (inEchoWindow()) return;
+    for (let i = e.resultIndex; i < e.results.length; i++) {
+      const res = e.results[i];
+      if (!res.isFinal) continue;
+      handleFinalChunk(res[0].transcript);
+    }
+  };
+
+  r.onerror = (e) => {
+    // "no-speech" / "aborted" / "audio-capture" etc. are routine — let onend handle restart.
+    if (e.error === "not-allowed" || e.error === "service-not-allowed") {
+      setPillState("error", "microphone permission denied");
+      _wakeManuallyPaused = true;
+    } else if (e.error !== "aborted" && e.error !== "no-speech") {
+      console.warn("[wake] SR error:", e.error);
+    }
+  };
+
+  r.onend = () => {
+    _recog = null;
+    if (_wakeManuallyPaused) return;
+    clearTimeout(_restartTimer);
+    _restartTimer = setTimeout(startWakeRecog, RESTART_DELAY_MS);
+  };
+
+  _recog = r;
+  try { r.start(); }
+  catch (e) {
+    // Chrome throws if start() is called too quickly after a previous stop.
+    _recog = null;
+    clearTimeout(_restartTimer);
+    _restartTimer = setTimeout(startWakeRecog, RESTART_DELAY_MS);
+  }
+}
+
+function stopWakeRecog() {
+  clearTimeout(_restartTimer);
+  if (_recog) { try { _recog.stop(); } catch {} _recog = null; }
+}
+
+function armSilenceTimer() {
+  clearTimeout(_silenceTimer);
+  _silenceTimer = setTimeout(submitWakeBuffer, SILENCE_MS);
+}
+
+function submitWakeBuffer() {
+  const prompt = _wakeBuf.trim();
+  _wakeArmed = false;
+  _wakeBuf = "";
+  clearTimeout(_silenceTimer);
+  if (!prompt) {
+    setPillState("listening", 'listening for "hey claude"');
+    return;
+  }
+  $input.value = prompt;
+  autosize($input);
+  setPillState("thinking", "thinking…");
+  onSend();
+}
+
+function handleFinalChunk(rawText) {
+  const text = (rawText || "").trim();
+  if (!text) return;
+  if (!_wakeArmed) {
+    const m = text.match(WAKE_RE);
+    if (!m) return;
+    const after = text.slice(m.index + m[0].length).trim();
+    _wakeArmed = true;
+    _wakeBuf = after;
+    setPillState("armed", after ? "heard you — go on…" : "yes?");
+    clawdVid.listening();
+    armSilenceTimer();
+    return;
+  }
+  // Already armed — append to buffer and reset silence timer.
+  _wakeBuf = (_wakeBuf ? _wakeBuf + " " : "") + text;
+  setPillState("armed", "go on…");
+  armSilenceTimer();
+}
+
+// ── TTS speaking-state hooks ───────────────────────────────────────────────
+// We gate wake-word detection while clawd is speaking. This works by
+// observing _ttsAudio (set in ttsPlayBlob) via inEchoWindow(). We also
+// poll periodically to update the status pill and stamp _lastSpokeTs as
+// audio drains, so the echo-tail window starts when speech actually ends.
+setInterval(() => {
+  if (_ttsAudio) {
+    _lastSpokeTs = Date.now();
+    if (!$statusPill.classList.contains("speaking") && !_wakeArmed) {
+      setPillState("speaking", "clawd speaking…");
+    }
+  } else if ($statusPill.classList.contains("speaking")) {
+    if (Date.now() - _lastSpokeTs >= ECHO_TAIL_MS) {
+      setPillState(_wakeArmed ? "armed" : "listening",
+                   _wakeArmed ? "go on…" : 'listening for "hey claude"');
+    }
+  }
+}, 200);
+
+// ── Manual mic button (fallback) ──────────────────────────────────────────
+// In dev mode the mic button toggles wake-word listening on/off so you can
+// silence the loop temporarily.
+if ($btnMic) {
+  $btnMic.addEventListener("click", () => {
+    if (_wakeManuallyPaused) {
+      _wakeManuallyPaused = false;
+      $btnMic.classList.remove("recording");
+      startWakeRecog();
+      setPillState("listening", 'listening for "hey claude"');
+    } else {
+      _wakeManuallyPaused = true;
+      $btnMic.classList.add("recording");
+      $btnMic.title = "wake-word paused — click to resume";
+      stopWakeRecog();
+      setPillState("error", "wake-word paused");
+    }
+  });
+}
+
+// SSE — keep the events stream alive (the server still emits toggle-mic /
+// toggle-view from POST /trigger-* endpoints). We only honor toggle-mic to
+// pause/resume wake-word listening; the other triggers are no-ops here.
+try {
+  const _wakeEvents = new EventSource("/events");
+  _wakeEvents.onmessage = (e) => {
+    if (e.data === "toggle-mic" && $btnMic) $btnMic.click();
+  };
+} catch (e) { /* SSE optional */ }
+
+// ── Model picker ───────────────────────────────────────────────────────────
+function initModelPicker() {
+  const sel = document.getElementById("modelPicker");
+  const tab = currentTab();
+  if (tab) {
+    if ([...sel.options].some(o => o.value === tab.selectedModel)) sel.value = tab.selectedModel;
+    else { sel.value = DEFAULT_MODEL; tab.selectedModel = DEFAULT_MODEL; }
+  }
+  sel.addEventListener("change", () => {
+    const t = currentTab();
+    if (!t) return;
+    t.selectedModel = sel.value;
+    saveTabs();
+  });
+}
+
+// ── Boot ───────────────────────────────────────────────────────────────────
+async function boot() {
+  // Settings/auth config
+  const stored = localStorage.getItem("clawd.config");
+  if (stored) {
+    try {
+      const cfg = JSON.parse(stored);
+      // Drop legacy sessionKey field — sessions live on tabs now
+      delete cfg.sessionKey;
+      state.config = cfg;
+    } catch {}
+  }
+  if (!state.config?.wsUrl || !state.config?.token) {
+    try {
+      const resp = await fetch("/config");
+      const cfg = await resp.json();
+      state.config = state.config || {};
+      if (!state.config.wsUrl) state.config.wsUrl = cfg.wsUrl;
+      if (!state.config.token) state.config.token = cfg.token;
+      if (!state.config.bankrKey && cfg.bankrKey) state.config.bankrKey = cfg.bankrKey;
+      _ttsMode = (cfg.ttsBackend && cfg.ttsBackend !== "none") ? cfg.ttsBackend : "browser";
+      console.log("[tts] backend:", _ttsMode);
+      applyTtsState();
+    } catch (e) { console.warn("no /config endpoint", e); }
+  } else {
+    // We had cached config in localStorage; still ask the server whether OpenAI TTS is available.
+    try {
+      const resp = await fetch("/config");
+      const cfg = await resp.json();
+      _ttsMode = (cfg.ttsBackend && cfg.ttsBackend !== "none") ? cfg.ttsBackend : "browser";
+      console.log("[tts] backend:", _ttsMode);
+      applyTtsState();
+    } catch {}
+  }
+  if (!state.config?.wsUrl) state.config = { ...(state.config || {}), wsUrl: "ws://127.0.0.1:18789" };
+  if (!state.config.token) {
+    setStatus("bad", "no token — open settings");
+    openSettings();
+    return;
+  }
+
+  // Initialize tabs (restore from storage or seed default)
+  const restored = loadTabsFromStorage();
+  if (restored && restored.length) {
+    state.tabs = restored;
+    for (const t of state.tabs) $transcript.appendChild(t.paneEl);
+    const savedActive = localStorage.getItem("clawd.activeTab");
+    state.activeTabId = (savedActive && state.tabs.find(t => t.id === savedActive)) ? savedActive : state.tabs[0].id;
+  } else {
+    const tab = makeTab({
+      id: "ui-" + shortHex(6),
+      sessionKey: "agent:clawd:main",
+      displayName: "new chat 1",
+      selectedModel: localStorage.getItem("clawd.model") || DEFAULT_MODEL,
+    });
+    state.tabs.push(tab);
+    $transcript.appendChild(tab.paneEl);
+    state.activeTabId = tab.id;
+    saveTabs();
+  }
+  state.tabs.forEach(t => t.paneEl.classList.toggle("active", t.id === state.activeTabId));
+  renderTabs();
+  initModelPicker();
+  // Restore composer draft for the active tab
+  const _activeTab = currentTab();
+  if (_activeTab) {
+    $input.value = loadDraft(_activeTab);
+    autosize($input);
+  }
+  connect();
+}
+
+window.__clawdState = state;
+
+// ── clawd-video-chat boot extras ───────────────────────────────────────────
+// 1) ?dev=1 in the URL drops OBS mode and reveals the full chat UI for debugging.
+// 2) ?nostatus=1 hides the status pill (cleaner OBS feed).
+// 3) TTS is force-enabled by default — the whole point of this build is voice.
+// 4) Wake-word recognizer is started after boot. Browsers require a user
+//    gesture before mic permission; if start() throws we'll retry on first click.
+(function initVideoChat() {
+  const params = new URLSearchParams(location.search);
+  if (params.has("dev")) document.body.classList.remove("obs");
+  if (params.has("nostatus")) document.body.classList.add("hide-status");
+
+  // Force TTS on for video-chat — there's no fallback UI to click 🔊.
+  if (!_ttsEnabled) {
+    _ttsEnabled = true;
+    localStorage.setItem("clawd.tts", "1");
+    applyTtsState();
+  }
+
+  // Try to start the wake-word recognizer. If the browser blocks it
+  // (some require a user gesture), retry on the first interaction.
+  let started = false;
+  const tryStart = () => {
+    if (started) return;
+    started = true;
+    startWakeRecog();
+  };
+  setTimeout(tryStart, 400);
+  ["click", "keydown", "touchstart"].forEach(ev =>
+    window.addEventListener(ev, tryStart, { once: true, passive: true })
+  );
+})();
+
+boot();
+</script>
+</body>
+</html>
