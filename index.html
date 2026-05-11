@@ -1294,7 +1294,12 @@ if (localStorage.getItem("clawd.minimized") === "1") {
   $widget.classList.remove("expanded");
 }
 document.getElementById("bubble").addEventListener("click", toggleMinimize);
-document.getElementById("clawdVid").addEventListener("click", toggleMinimize);
+// In OBS mode the avatar must stay visible — clicking would minimize it into
+// a bubble that we've hidden via CSS, making clawd appear to vanish. Gate.
+document.getElementById("clawdVid").addEventListener("click", () => {
+  if (document.body.classList.contains("obs")) return;
+  toggleMinimize();
+});
 $btnNewTab.addEventListener("click", () => createTab());
 
 document.getElementById("bubbleControls").addEventListener("click", (e) => e.stopPropagation());
