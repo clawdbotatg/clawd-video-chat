@@ -1289,7 +1289,15 @@ function toggleMinimize() {
   }
 }
 
-if (localStorage.getItem("clawd.minimized") === "1") {
+// OBS mode must never start minimized — the "minimized" CSS hides #panel
+// and shows #bubble, but #bubble is itself display:none in OBS, so the
+// page would render fully blank. Also clear any stale persisted state so
+// the next load is clean.
+if (document.body.classList.contains("obs")) {
+  localStorage.removeItem("clawd.minimized");
+  $widget.classList.remove("minimized");
+  $widget.classList.add("expanded");
+} else if (localStorage.getItem("clawd.minimized") === "1") {
   $widget.classList.add("minimized");
   $widget.classList.remove("expanded");
 }
