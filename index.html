@@ -383,6 +383,55 @@
   body.obs #status-pill.thinking  .dot { background: #888; animation: pulse 1.5s infinite; }
   body.obs #status-pill.error     .dot { background: var(--bad); }
   body.obs.hide-status #status-pill { opacity: 0; }
+
+  /* ── Diagnostic chip (top-left) — visible in OBS mode for at-a-glance
+     backend / connection state. Hidden in dev mode. */
+  #diag-chip {
+    display: none;
+    position: fixed; top: 16px; left: 16px;
+    background: rgba(0,0,0,0.55); color: var(--fg2);
+    padding: 4px 10px; border-radius: 14px;
+    font-family: var(--font-mono); font-size: 11px; line-height: 1.2;
+    z-index: 10000; pointer-events: none;
+  }
+  body.obs #diag-chip { display: block; }
+  body.obs.hide-status #diag-chip { display: none; }
+
+  /* ── Fallback toast — flashes red if browser TTS path ever fires.
+     Auto-shows for 10s when flashBrowserFallbackWarning() runs. */
+  #fallback-toast {
+    display: none;
+    position: fixed; top: 16px; left: 50%; transform: translateX(-50%);
+    background: var(--bad); color: #fff;
+    padding: 10px 18px; border-radius: 8px;
+    font-family: var(--font-sans); font-size: 14px; font-weight: 600;
+    z-index: 10001; pointer-events: none;
+    box-shadow: 0 4px 12px rgba(0,0,0,0.35);
+  }
+  #fallback-toast.show { display: block; }
+
+  /* ── Click-to-start overlay (autoplay gate) ──────────────────────────── */
+  #audio-unlock {
+    position: fixed; inset: 0;
+    background: rgba(0, 170, 0, 0.92);  /* chroma green + alpha */
+    display: flex; align-items: center; justify-content: center;
+    z-index: 99999; cursor: pointer;
+    backdrop-filter: blur(2px);
+    transition: opacity 0.4s ease;
+  }
+  #audio-unlock.dismissed { opacity: 0; pointer-events: none; }
+  .audio-unlock-card {
+    text-align: center; color: #fff;
+    font-family: var(--font-sans);
+  }
+  .audio-unlock-title {
+    font-size: 36px; font-weight: 700;
+    text-shadow: 0 2px 10px rgba(0,0,0,0.4);
+  }
+  .audio-unlock-sub {
+    font-size: 14px; opacity: 0.85;
+    margin-top: 12px;
+  }
 </style>
 </head>
 <body class="obs">
@@ -391,6 +440,23 @@
 <div id="status-pill" class="listening">
   <span class="dot"></span>
   <span class="label">listening for "okay claude"</span>
+</div>
+
+<!-- Diagnostic chip — top-left in OBS mode. Shows _ttsMode + connection. -->
+<div id="diag-chip">tts=…</div>
+
+<!-- Big red toast that flashes if we ever fall back to browser TTS. -->
+<div id="fallback-toast">⚠ browser TTS fallback in use — ElevenLabs not active</div>
+
+<!-- Click-to-start overlay. Chrome's autoplay policy blocks audio.play()
+     until the user clicks on the page once — required even with mic perms.
+     We dismiss the overlay on first click and prime an Audio gesture so
+     all subsequent ElevenLabs blobs play. -->
+<div id="audio-unlock">
+  <div class="audio-unlock-card">
+    <div class="audio-unlock-title">🎙️ click to start clawd</div>
+    <div class="audio-unlock-sub">grants mic + unlocks audio playback (once per session)</div>
+  </div>
 </div>
 
 <div id="widget" class="expanded">
@@ -2280,6 +2346,7 @@ function ttsStrip(text) {
 }
 
 function ttsReset() {
+  console.log("%c[clawd] ttsReset()", "color:#e55a2b;font-weight:bold", "had audio:", !!_ttsAudio, "queue:", _ttsQueue.length, "from:", new Error().stack.split("\n").slice(1, 4).map(s => s.trim()).join(" | "));
   _ttsSpokenUpTo = 0;
   _ttsChunkIndex = 0;
   _ttsTurnFullText = "";
@@ -2338,25 +2405,36 @@ function ttsPlayBlob(blob, kind) {
     const audio = new Audio(url);
     audio.__kind = kind;
     _ttsAudio = audio;
+    console.log("%c[clawd] ttsPlayBlob ▶ start", "color:#34eeb6", "kind:", kind, "blob:", blob.size, "bytes", "url:", url.slice(-12));
     let done = false;
-    const finish = () => {
+    const finish = (reason) => {
       if (done) return;
       done = true;
+      console.log("%c[clawd] ttsPlayBlob ⏹ finish", "color:#cc2b2b", "kind:", kind, "reason:", reason, "url:", url.slice(-12));
       URL.revokeObjectURL(url);
       if (_ttsAudio === audio) _ttsAudio = null;
       if (_ttsResolveCurrent === finish) _ttsResolveCurrent = null;
       resolve();
     };
-    _ttsResolveCurrent = finish;
+    _ttsResolveCurrent = () => finish("ttsReset/resolveCurrent");
     audio.onplay = () => {
+      console.log("%c[clawd] audio.onplay", "color:#34eeb6", "kind:", kind, "url:", url.slice(-12));
       clearTimeout(_ttsIdleTimer);
       clawdVid.chatting(_ttsTurnFullText);
       if (kind === "real") _ttsRealAudioStarted = true;
       if (kind === "ack") ackTrace("audio.onplay fired — ack is speaking");
     };
-    audio.onended = () => { if (kind === "ack") ackTrace("audio.onended for ack"); finish(); };
-    audio.onerror = (e) => { if (kind === "ack") ackTrace("audio.onerror for ack", audio.error); finish(); };
-    audio.play().catch((e) => { if (kind === "ack") ackTrace("audio.play() rejected for ack", e.message); finish(); });
+    audio.onended = () => { if (kind === "ack") ackTrace("audio.onended for ack"); finish("onended"); };
+    audio.onerror = (e) => {
+      console.warn("%c[clawd] audio.onerror", "color:#ffcf72", "kind:", kind, "url:", url.slice(-12), "err:", audio.error && audio.error.code, audio.error && audio.error.message);
+      if (kind === "ack") ackTrace("audio.onerror for ack", audio.error);
+      finish("onerror");
+    };
+    audio.play().catch((e) => {
+      console.warn("%c[clawd] audio.play() rejected", "color:#ffcf72", "kind:", kind, "err:", e.name, e.message);
+      if (kind === "ack") ackTrace("audio.play() rejected for ack", e.message);
+      finish("play-rejected");
+    });
   });
 }
 
@@ -2635,6 +2713,12 @@ function ttsFeed(fullText, isFinal) {
     }
   }
   // ── Browser SpeechSynthesis fallback (unchanged behavior) ──
+  // If we got here in clawd-video-chat it means _ttsMode === "browser",
+  // i.e. the server reported ttsBackend:none. That should never happen
+  // when ELEVENLABS_API_KEY is set — surface it loudly so the bug is
+  // visible at a glance, not buried in console.
+  console.warn("[clawd-video-chat] BROWSER TTS FALLBACK — _ttsMode is 'browser', ElevenLabs not in use.");
+  if (typeof flashBrowserFallbackWarning === "function") flashBrowserFallbackWarning();
   const newPart = fullText.slice(_ttsSpokenUpTo);
   if (!newPart) return;
   function mkUtt(text) {
@@ -2862,10 +2946,40 @@ window.addEventListener("keydown", (e) => {
     wakeBuf: _wakeBuf,
     ttsAudio: !!_ttsAudio,
     ttsEnabled: _ttsEnabled,
+    ttsMode: _ttsMode,
     recogAlive: !!_recog,
     paused: _wakeManuallyPaused,
   });
 });
+
+// ── Live diagnostic chip (top-left in OBS mode) ──────────────────────────
+// Shows _ttsMode + connection + whether audio is currently playing. Updates
+// every 500ms. Visible without DevTools so we can debug from a screenshot.
+const $diagChip = document.getElementById("diag-chip");
+if ($diagChip) {
+  setInterval(() => {
+    const conn = !!(state && state.connected);
+    $diagChip.textContent =
+      `tts=${_ttsMode}` +
+      ` · ws=${conn ? "ok" : "down"}` +
+      (_ttsAudio ? " · speaking" : "");
+    $diagChip.style.color = (_ttsMode === "elevenlabs" || _ttsMode === "openai")
+      ? "rgba(52,238,182,0.9)"   // green-ish — good
+      : "rgba(229,90,43,0.95)";  // red-ish — fallback
+  }, 500);
+}
+
+// ── Big red toast when speechSynthesis fires (browser TTS fallback) ──────
+const $fallbackToast = document.getElementById("fallback-toast");
+let _fallbackToastTimer = null;
+function flashBrowserFallbackWarning() {
+  if (!$fallbackToast) return;
+  $fallbackToast.classList.add("show");
+  clearTimeout(_fallbackToastTimer);
+  _fallbackToastTimer = setTimeout(() => {
+    $fallbackToast.classList.remove("show");
+  }, 10000);
+}
 
 // ── Manual mic button (fallback) ──────────────────────────────────────────
 // In dev mode the mic button toggles wake-word listening on/off so you can
@@ -2991,8 +3105,11 @@ window.__clawdState = state;
 // 1) ?dev=1 in the URL drops OBS mode and reveals the full chat UI for debugging.
 // 2) ?nostatus=1 hides the status pill (cleaner OBS feed).
 // 3) TTS is force-enabled by default — the whole point of this build is voice.
-// 4) Wake-word recognizer is started after boot. Browsers require a user
-//    gesture before mic permission; if start() throws we'll retry on first click.
+// 4) An "audio unlock" overlay covers the page until the user clicks. Chrome's
+//    autoplay policy blocks HTMLMediaElement.play() until the page has received
+//    a real user gesture — mic permission does NOT count. The overlay click is
+//    that gesture; we ALSO play a silent Audio element inside the handler so
+//    Chrome's gesture token is bound to audio playback, not just the page.
 (function initVideoChat() {
   const params = new URLSearchParams(location.search);
   if (params.has("dev")) document.body.classList.remove("obs");
@@ -3005,18 +3122,38 @@ window.__clawdState = state;
     applyTtsState();
   }
 
-  // Try to start the wake-word recognizer. If the browser blocks it
-  // (some require a user gesture), retry on the first interaction.
-  let started = false;
-  const tryStart = () => {
-    if (started) return;
-    started = true;
+  const $unlock = document.getElementById("audio-unlock");
+  let unlocked = false;
+
+  function unlockAudioAndStart() {
+    if (unlocked) return;
+    unlocked = true;
+    // Play a 1-sample silent WAV inside this gesture so Chrome's autoplay
+    // policy registers that the page has audio permission. Future Audio
+    // elements (the ElevenLabs blobs) will then play without prompting.
+    try {
+      const silent = new Audio("data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEARKwAAIhYAQACABAAZGF0YQAAAAA=");
+      silent.volume = 0.01;
+      silent.play().then(() => silent.pause()).catch(e => console.warn("[clawd] silent unlock failed:", e.message));
+    } catch (e) { console.warn("[clawd] silent unlock threw:", e); }
+
+    // Hide the overlay and start the wake-word recognizer.
+    if ($unlock) {
+      $unlock.classList.add("dismissed");
+      setTimeout(() => { try { $unlock.remove(); } catch {} }, 500);
+    }
     startWakeRecog();
-  };
-  setTimeout(tryStart, 400);
-  ["click", "keydown", "touchstart"].forEach(ev =>
-    window.addEventListener(ev, tryStart, { once: true, passive: true })
-  );
+    console.log("%c[clawd] audio unlocked, wake-word recognizer started", "color:#34eeb6");
+  }
+
+  if ($unlock) {
+    $unlock.addEventListener("click", unlockAudioAndStart, { once: true });
+  } else {
+    // Overlay missing (e.g. someone edited the HTML) — fall back to old behavior.
+    ["click", "keydown", "touchstart"].forEach(ev =>
+      window.addEventListener(ev, unlockAudioAndStart, { once: true, passive: true })
+    );
+  }
 })();
 
 boot();

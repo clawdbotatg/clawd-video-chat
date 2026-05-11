@@ -352,11 +352,14 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_json({"error": "empty text"}, status=400)
                 return
             backend = tts_backend()
+            voice = os.environ.get("ELEVENLABS_VOICE_ID", "<default>")[:12]
+            print(f"[tts] backend={backend} voice={voice} chars={len(text)} sample={text[:60]!r}", flush=True)
             if backend == "elevenlabs":
                 self._tts_elevenlabs(text[:4000])
             elif backend == "openai":
                 self._tts_openai(text[:4000])
             else:
+                print(f"[tts] WARN: no backend configured — returning 503", flush=True)
                 self.send_json({"error": "no tts backend configured"}, status=503)
         except urllib.error.HTTPError as e:
             detail = e.read().decode("utf-8", errors="replace")[:500]
