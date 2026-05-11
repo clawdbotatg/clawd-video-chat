@@ -390,7 +390,7 @@
 <!-- Status pill — only visible in OBS mode. Reflects wake-word listener state. -->
 <div id="status-pill" class="listening">
   <span class="dot"></span>
-  <span class="label">listening for "hey claude"</span>
+  <span class="label">listening for "okay claude"</span>
 </div>
 
 <div id="widget" class="expanded">
@@ -2673,8 +2673,8 @@ $btnSpeak.addEventListener("click", () => {
 
 // ── Always-listening wake-word loop ────────────────────────────────────────
 // Replaces the push-to-talk mic in clawd-web-chat. The recognizer runs
-// continuously and we scan finalized chunks for a wake phrase ("hey claude",
-// "okay claude", a few common mishearings). Once we hear it, we capture the
+// continuously and we scan finalized chunks for a wake phrase ("okay claude",
+// "ok clod", and a few common mishearings). Once we hear it, we capture the
 // trailing utterance (+ anything that arrives in the next ~SILENCE_MS of
 // quiet) and submit it via the existing onSend() path so all the streaming /
 // TTS / avatar plumbing stays identical.
@@ -2687,7 +2687,7 @@ const $btnMic = document.getElementById("btnMic");
 const $statusPill = document.getElementById("status-pill");
 const $statusLabel = $statusPill ? $statusPill.querySelector(".label") : null;
 
-const WAKE_RE = /\b(hey|okay|ok)[\s,]+(claude|clawd|claud|cloud|clyde|claud[oe])\b/i;
+const WAKE_RE = /\b(okay|ok)[\s,]+(claude|clawd|claud|cloud|clyde|clod|claud[oe])\b/i;
 const SILENCE_MS = 1500;            // how long to wait after wake before submitting
 const ECHO_TAIL_MS = 800;            // ignore SR for this long after TTS audio ends
 const RESTART_DELAY_MS = 250;        // backoff before restarting after onend
@@ -2734,7 +2734,7 @@ function startWakeRecog() {
     if (_ttsAudio) return;
     const tab = (typeof currentTab === "function") ? currentTab() : null;
     if (tab && tab.activeRunId) return;
-    setPillState("listening", 'listening for "hey claude"');
+    setPillState("listening", 'listening for "okay claude"');
   };
 
   r.onresult = (e) => {
@@ -2789,7 +2789,7 @@ function submitWakeBuffer() {
   _wakeBuf = "";
   clearTimeout(_silenceTimer);
   if (!prompt) {
-    setPillState("listening", 'listening for "hey claude"');
+    setPillState("listening", 'listening for "okay claude"');
     return;
   }
   $input.value = prompt;
@@ -2832,7 +2832,7 @@ setInterval(() => {
   } else if ($statusPill.classList.contains("speaking")) {
     if (Date.now() - _lastSpokeTs >= ECHO_TAIL_MS) {
       setPillState(_wakeArmed ? "armed" : "listening",
-                   _wakeArmed ? "go on…" : 'listening for "hey claude"');
+                   _wakeArmed ? "go on…" : 'listening for "okay claude"');
     }
   }
 }, 200);
@@ -2846,7 +2846,7 @@ if ($btnMic) {
       _wakeManuallyPaused = false;
       $btnMic.classList.remove("recording");
       startWakeRecog();
-      setPillState("listening", 'listening for "hey claude"');
+      setPillState("listening", 'listening for "okay claude"');
     } else {
       _wakeManuallyPaused = true;
       $btnMic.classList.add("recording");

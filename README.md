@@ -4,7 +4,8 @@ An always-listening, OBS-feed-shaped UI for putting clawd on a Zoom call.
 
 The page renders the clawd avatar fullscreen on a chroma-green background.
 A continuous `webkitSpeechRecognition` loop scans for the wake phrase
-**"hey claude"** or **"okay claude"**. When it hears one, it captures the
+**"okay claude"** / **"ok clod"** (and a few common Web-Speech
+mishearings). When it hears one, it captures the
 trailing utterance and sends it to the OpenClaw gateway over the same
 WebSocket protocol [`clawd-web-chat`](https://github.com/clawdbotatg/clawd-web-chat)
 uses. The reply is streamed back as ElevenLabs audio while the avatar
@@ -75,7 +76,7 @@ loaded into the agent.)
 The recognizer matches a permissive regex covering common mishearings:
 
 ```
-/\b(hey|okay|ok)[\s,]+(claude|clawd|claud|cloud|clyde|claud[oe])\b/i
+/\b(okay|ok)[\s,]+(claude|clawd|claud|cloud|clyde|clod|claud[oe])\b/i
 ```
 
 After the wake phrase, anything that follows is captured until 1.5s of
