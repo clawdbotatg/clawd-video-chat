@@ -434,6 +434,32 @@
   #stats-chip .stats-row { display: flex; justify-content: space-between; gap: 12px; }
   #stats-chip .stats-model { color: var(--fg); font-weight: 600; margin-bottom: 4px; }
   #stats-chip .stats-cost { color: var(--ok); margin-top: 4px; font-weight: 600; }
+  #stats-chip .model-picker {
+    margin-top: 8px;
+    display: flex; gap: 4px;
+    pointer-events: auto;        /* override #stats-chip pointer-events:none */
+  }
+  #stats-chip .model-picker button {
+    flex: 1;
+    background: rgba(255,255,255,0.06);
+    border: 1px solid rgba(255,255,255,0.08);
+    color: var(--fg2);
+    font: inherit; font-size: 10px;
+    padding: 4px 6px;
+    border-radius: 5px;
+    cursor: pointer;
+    transition: background 0.15s, color 0.15s, border-color 0.15s;
+  }
+  #stats-chip .model-picker button:hover {
+    background: rgba(255,255,255,0.12);
+    color: var(--fg);
+  }
+  #stats-chip .model-picker button.active {
+    background: var(--accent);
+    color: #fff;
+    border-color: var(--accent);
+    font-weight: 600;
+  }
 
   /* ── Rolling transcript overlay (top-right, below stats) ──────────────
      Off by default. Toggle on with ?dev=1 or ?transcript=1. */
@@ -510,6 +536,11 @@
   <div class="stats-row stats-turn">turn: —</div>
   <div class="stats-row stats-session">session: —</div>
   <div class="stats-row stats-cost">~$0.00</div>
+  <div class="model-picker">
+    <button data-model="bankr/claude-opus-4.7"   title="Opus 4.7 — $5/$25 per M">opus</button>
+    <button data-model="bankr/claude-sonnet-4.6" title="Sonnet 4.6 — $3/$15 per M">sonnet</button>
+    <button data-model="bankr/kimi-k2.6"         title="Kimi K2.6 — $0.95/$4 per M">kimi</button>
+  </div>
 </div>
 
 <!-- Big red toast that flashes if we ever fall back to browser TTS. -->
@@ -3410,6 +3441,42 @@ if ($diagChip) {
       : "rgba(229,90,43,0.95)";  // red-ish — fallback
   }, 500);
 }
+
+// ── OBS-mode model picker (opus / sonnet / kimi) ──────────────────────────
+// Reuses the existing dev-mode picker plumbing: clicking a button updates
+// currentTab().selectedModel, persists to localStorage under "clawd.model",
+// and the next onSend fires ensureModelSelected which sends `/model <name>`
+// to the gateway. No gateway restart needed — openclaw routes the per-session
+// override at the next turn.
+const _modelPicker = document.querySelector("#stats-chip .model-picker");
+function refreshModelPickerActive() {
+  if (!_modelPicker) return;
+  const active = (typeof currentTab === "function" && currentTab())
+    ? currentTab().selectedModel
+    : (localStorage.getItem("clawd.model") || window.__stats.model);
+  _modelPicker.querySelectorAll("button").forEach(b => {
+    b.classList.toggle("active", b.dataset.model === active);
+  });
+}
+if (_modelPicker) {
+  _modelPicker.addEventListener("click", (e) => {
+    const btn = e.target.closest("button[data-model]");
+    if (!btn) return;
+    const newModel = btn.dataset.model;
+    const tab = (typeof currentTab === "function") ? currentTab() : null;
+    if (tab) tab.selectedModel = newModel;
+    localStorage.setItem("clawd.model", newModel);
+    window.__stats.model = newModel;
+    refreshModelPickerActive();
+    renderStatsChip();
+    if (typeof saveTabs === "function") saveTabs();
+    console.log("%c[clawd] model switch queued", "color:#34eeb6", newModel,
+                "— takes effect on next 'okay claude' turn");
+  });
+}
+// Refresh on a loose interval since boot() runs after this code and sets
+// currentTab() lazily. Cheap.
+setInterval(refreshModelPickerActive, 1000);
 
 // ── Big red toast when speechSynthesis fires (browser TTS fallback) ──────
 const $fallbackToast = document.getElementById("fallback-toast");
