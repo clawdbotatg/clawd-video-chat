@@ -918,6 +918,15 @@ window.__stats = {
   // to forward LLM usage today, so this stays false and we estimate from
   // text length (chars/4 ≈ tokens for English).
   exact: false,
+  // Real session token count, fetched from /api/session-stats (which shells
+  // out to `openclaw sessions --json`). Updates after every chat final.
+  real: {
+    totalTokens: 0,
+    prevTotalTokens: null,  // baseline; null until first fetch
+    contextTokens: null,
+    cost: 0,
+    sessionId: null,
+  },
 };
 const CHARS_PER_TOKEN = 4;
 function estimateTokens(text) {
@@ -1091,25 +1100,85 @@ function renderStatsChip() {
   if (!root) return;
   const s = window.__stats;
   const fmt = (n) => {
+    if (!n && n !== 0) return "—";
     if (n >= 1e6) return (n / 1e6).toFixed(2) + "M";
     if (n >= 1e3) return (n / 1e3).toFixed(1) + "K";
     return String(n);
   };
-  const tag = s.exact ? "" : " <span style='opacity:0.55'>est</span>";
+  const fmtMoney = (n) =>
+    n < 0.01 ? `~$${n.toFixed(4)}` : `~$${n.toFixed(2)}`;
   const modelDisplay = (s.model || "—").replace(/^bankr\//, "").replace(/^anthropic\//, "");
   root.querySelector(".stats-model").innerHTML =
     `<span>model</span><span>${modelDisplay}</span>`;
-  root.querySelector(".stats-turn").innerHTML =
-    `<span>turn${tag}</span><span>↑${fmt(s.turn.in)} ↓${fmt(s.turn.out)}</span>`;
-  root.querySelector(".stats-session").innerHTML =
-    `<span>session · ${s.session.turns}t</span><span>↑${fmt(s.session.in)} ↓${fmt(s.session.out)}</span>`;
-  const costStr = s.session.cost < 0.01
-    ? `~$${s.session.cost.toFixed(4)}`
-    : `~$${s.session.cost.toFixed(2)}`;
-  root.querySelector(".stats-cost").innerHTML =
-    `<span>est cost</span><span>${costStr}</span>`;
+
+  // If we have real session-stats data from openclaw, show that. Otherwise
+  // fall back to the char-based estimate.
+  const haveReal = s.real.totalTokens > 0;
+  if (haveReal) {
+    const pct = s.real.contextTokens
+      ? Math.round(100 * s.real.totalTokens / s.real.contextTokens) + "%"
+      : "—";
+    // "turn" row = delta since the previous chat-final fetch (i.e. content added this turn).
+    const lastDelta = s.turn._realDelta || 0;
+    root.querySelector(".stats-turn").innerHTML =
+      `<span>turn delta</span><span>+${fmt(lastDelta)}</span>`;
+    root.querySelector(".stats-session").innerHTML =
+      `<span>session · ${s.session.turns}t</span><span>${fmt(s.real.totalTokens)}/${fmt(s.real.contextTokens)} (${pct})</span>`;
+    root.querySelector(".stats-cost").innerHTML =
+      `<span>cost</span><span>${fmtMoney(s.real.cost)}</span>`;
+  } else {
+    const tag = " <span style='opacity:0.55'>est</span>";
+    root.querySelector(".stats-turn").innerHTML =
+      `<span>turn${tag}</span><span>↑${fmt(s.turn.in)} ↓${fmt(s.turn.out)}</span>`;
+    root.querySelector(".stats-session").innerHTML =
+      `<span>session · ${s.session.turns}t</span><span>↑${fmt(s.session.in)} ↓${fmt(s.session.out)}</span>`;
+    root.querySelector(".stats-cost").innerHTML =
+      `<span>est cost</span><span>${fmtMoney(s.session.cost)}</span>`;
+  }
 }
 renderStatsChip();
+
+// ── Real session-stats fetch ──────────────────────────────────────────────
+// Calls our /api/session-stats endpoint which shells out to `openclaw
+// sessions --json` for the active sessionKey. Real totalTokens replaces the
+// char-based estimates. Cost estimate is conservative: assumes each turn's
+// input charge ≈ totalTokens-before-turn (the model re-reads the whole
+// history every turn) plus the new user message, and output ≈ delta minus
+// the user message. Anthropic prompt-caching would actually make
+// subsequent-turn input ~10× cheaper, so this overestimates if cache is hit.
+async function fetchSessionStats() {
+  try {
+    const res = await fetch("/api/session-stats");
+    if (!res.ok) return;
+    const d = await res.json();
+    if (!d || d.exists === false) return;
+    const tokens = d.tokens;
+    if (tokens == null) return;  // session exists but no chat yet
+    const r = window.__stats.real;
+    const prev = r.prevTotalTokens;
+    r.contextTokens = d.contextTokens || r.contextTokens;
+    r.sessionId = d.sessionId || r.sessionId;
+    r.totalTokens = tokens;
+    if (prev == null) {
+      // First-ever fetch — just baseline, no cost added.
+      r.prevTotalTokens = tokens;
+    } else if (tokens > prev) {
+      const delta = tokens - prev;
+      const userMsgTokens = window.__stats.turn.in || 0;
+      const inputCharged = prev + userMsgTokens;
+      const outputCharged = Math.max(0, delta - userMsgTokens);
+      const p = modelPricing(window.__stats.model || "");
+      const turnCost = inputCharged * p.in / 1e6 + outputCharged * p.out / 1e6;
+      r.cost += turnCost;
+      r.prevTotalTokens = tokens;
+      window.__stats.turn._realDelta = delta;
+      window.__stats.session.turns += 1;
+    }
+    renderStatsChip();
+  } catch (e) {
+    if (window.__clawdDebug) console.warn("[session-stats]", e);
+  }
+}
 
 const DEFAULT_MODEL = "bankr/claude-sonnet-4.6";
 
@@ -1866,6 +1935,10 @@ function handleChatEvent(payload) {
     removePendingByRunId(tab, runId);
     resolveTabRunCompletion(tab, runId, null);
     tab.turnCount = (tab.turnCount || 0) + 1;
+    // Pull real token counts from the openclaw session store now that the
+    // run has committed. Small delay so the gateway has time to flush the
+    // JSONL transcript file before we shell to the CLI.
+    setTimeout(fetchSessionStats, 1500);
     if (tab.turnCount === 3 || tab.turnCount === 9) autoTitleTab(tab).catch(() => {});
     const usedTools = t.toolCards && t.toolCards.size > 0;
     clawdVid.chatting(t.lastText || "", {
@@ -3498,6 +3571,10 @@ async function boot() {
 }
 
 window.__clawdState = state;
+
+// One initial pull so the stats chip shows whatever's already in the session
+// (in case the user reloaded mid-conversation).
+setTimeout(fetchSessionStats, 1500);
 
 // ── clawd-video-chat boot extras ───────────────────────────────────────────
 // 1) ?dev=1 in the URL drops OBS mode and reveals the full chat UI for debugging.

@@ -13,6 +13,7 @@ No pip deps, stdlib only.
 import json
 import os
 import queue
+import subprocess
 import sys
 import threading
 import urllib.error
@@ -141,6 +142,8 @@ class Handler(BaseHTTPRequestHandler):
             cfg = resolve_gateway_settings()
             cfg.pop("bankrKey", None)  # keep API key server-side only
             self.send_json(cfg)
+        elif path == "/api/session-stats":
+            self.handle_session_stats()
         elif path == "/health":
             self.send_json({"status": "ok"})
         elif path == "/events":
@@ -360,6 +363,53 @@ class Handler(BaseHTTPRequestHandler):
         except urllib.error.HTTPError as e:
             detail = e.read().decode("utf-8", errors="replace")[:300]
             self.send_json({"error": f"upstream {e.code}: {detail}"}, status=502)
+        except Exception as e:
+            self.send_json({"error": str(e)}, status=500)
+
+    def handle_session_stats(self):
+        """Shell out to `openclaw sessions --json` to read the real token
+        count for the active session. Returns the matching session's data
+        so the chip can show actual numbers instead of char-based estimates."""
+        cfg = load_openclaw_config()
+        session_key = os.environ.get("OPENCLAW_SESSION_KEY") or "agent:clawd:main"
+        parts = session_key.split(":")
+        if len(parts) < 2 or parts[0] != "agent":
+            self.send_json({"error": f"bad sessionKey: {session_key}"}, status=400)
+            return
+        agent_id = parts[1]
+        store = Path.home() / ".openclaw" / "agents" / agent_id / "sessions" / "sessions.json"
+        if not store.exists():
+            self.send_json({"sessionKey": session_key, "exists": False, "tokens": 0})
+            return
+        try:
+            r = subprocess.run(
+                ["openclaw", "sessions", "--store", str(store), "--json"],
+                capture_output=True, text=True, timeout=10,
+            )
+            if r.returncode != 0:
+                self.send_json({"error": "openclaw cli failed",
+                                "stderr": (r.stderr or "")[:500]}, status=502)
+                return
+            data = json.loads(r.stdout or "{}")
+            sessions = data.get("sessions", [])
+            match = next((s for s in sessions if s.get("key") == session_key), None)
+            if not match:
+                self.send_json({"sessionKey": session_key, "exists": False, "tokens": 0})
+                return
+            self.send_json({
+                "sessionKey": session_key,
+                "exists": True,
+                "sessionId": match.get("sessionId"),
+                "model": match.get("model"),
+                "tokens": match.get("totalTokens"),       # may be null if no chat yet
+                "tokensFresh": match.get("totalTokensFresh", False),
+                "contextTokens": match.get("contextTokens"),
+                "updatedAt": match.get("updatedAt"),
+                "ageMs": match.get("ageMs"),
+                "kind": match.get("kind"),
+            })
+        except subprocess.TimeoutExpired:
+            self.send_json({"error": "openclaw cli timeout"}, status=504)
         except Exception as e:
             self.send_json({"error": str(e)}, status=500)
 
