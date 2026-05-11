@@ -32,7 +32,7 @@
     --radius: 12px;
   }
   * { box-sizing: border-box; }
-  html, body { margin: 0; background: #00aa00; font-family: var(--font-sans); font-size: 16px; line-height: 1.5; overflow: hidden; height: 100%; }
+  html, body { margin: 0; background: #000; font-family: var(--font-sans); font-size: 16px; line-height: 1.5; overflow: hidden; height: 100%; }
 
   @keyframes pulse  { 0%,100% { opacity: 1; } 50% { opacity: 0.3; } }
   @keyframes fadeUp { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: none; } }
@@ -496,7 +496,7 @@
   /* ── Click-to-start overlay (autoplay gate) ──────────────────────────── */
   #audio-unlock {
     position: fixed; inset: 0;
-    background: rgba(0, 170, 0, 0.92);  /* chroma green + alpha */
+    background: rgba(0, 0, 0, 0.85);     /* dark but slightly transparent so clawd shows through */
     display: flex; align-items: center; justify-content: center;
     z-index: 99999; cursor: pointer;
     backdrop-filter: blur(2px);
