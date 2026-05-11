@@ -477,31 +477,35 @@
 <script>
 // ── Clawd video state machine ─────────────────────────────────────────────
 const clawdVid = (() => {
-  const IDLES = [
-    "clawdassets/idle_1.mp4",
-    "clawdassets/idle_2.mp4",
-    "clawdassets/idle.mp4",
-    "clawdassets/idle_lookaround.mp4",
-  ];
-  const RARE_BURGER  = "clawdassets/idle-rare-eats-a-burger.mp4";
-  const RARE_SMOKING = "clawdassets/idle-smoking.mp4";
-  const CHAT_DEFAULT = "clawdassets/chatting_1.mp4";
-  const CHAT_SHORT   = "clawdassets/short-subtle-talking.mp4";
-  const CHAT_DRUNK   = "clawdassets/talking-lil-drunk.mp4";
-  const CHAT_HELLO   = "clawdassets/talking-saying-hello.mp4";
-  const CHAT_EXPLAIN_HANDS = "clawdassets/talking-explaining-with-his-hands.mp4";
-  const CHAT_EXPLAIN = "clawdassets/explaining.mp4";
-  const CHAT_SATISFIED = "clawdassets/talking-satisfied-just-finished-something-good.mp4";
-  const FIRST_HELLO  = "clawdassets/saying-hello-for-the-first-time.mp4";
-  const BUILDING     = "clawdassets/building.mp4";
-  const BUILD_HAMMER_MED  = "clawdassets/hammering-tool-use-building-medium.mp4";
-  const BUILD_HAMMER_LONG = "clawdassets/longer-hammering-tool-use.mp4";
-  const BUILD_CLI_QUICK   = "clawdassets/quick-command-line-tool-use.mp4";
-  const BUILD_CLI_MED     = "clawdassets/medium-cli-or-tool-use.mp4";
-  const BUILD_CLI_LONG    = "clawdassets/longer-cli-command-line-tool-use.mp4";
-  const THINKING     = "clawdassets/thinking-idle-light-thinking.mp4";
-  const DEEP_THINKING = "clawdassets/deep-in-thought-or-listening.mp4";
-  const LISTENING    = "clawdassets/thinking-listening.mp4";
+  // clawd-video-chat only ships idle_1, idle_2, chatting_1 in clawdassets/.
+  // To avoid 404 noise we point every variant at one of those three. The
+  // upstream clawd-web-chat shipped a much richer clip library; we can copy
+  // more clips into clawdassets/ later and the references below will pick
+  // them up automatically (just swap the right-hand side back to the
+  // original filename).
+  const _IDLE_A = "clawdassets/idle_1.mp4";
+  const _IDLE_B = "clawdassets/idle_2.mp4";
+  const _CHAT  = "clawdassets/chatting_1.mp4";
+  const IDLES = [_IDLE_A, _IDLE_B];
+  const RARE_BURGER  = _IDLE_B;
+  const RARE_SMOKING = _IDLE_B;
+  const CHAT_DEFAULT = _CHAT;
+  const CHAT_SHORT   = _CHAT;
+  const CHAT_DRUNK   = _CHAT;
+  const CHAT_HELLO   = _CHAT;
+  const CHAT_EXPLAIN_HANDS = _CHAT;
+  const CHAT_EXPLAIN = _CHAT;
+  const CHAT_SATISFIED = _CHAT;
+  const FIRST_HELLO  = _CHAT;
+  const BUILDING     = _CHAT;
+  const BUILD_HAMMER_MED  = _CHAT;
+  const BUILD_HAMMER_LONG = _CHAT;
+  const BUILD_CLI_QUICK   = _CHAT;
+  const BUILD_CLI_MED     = _CHAT;
+  const BUILD_CLI_LONG    = _CHAT;
+  const THINKING     = _IDLE_B;
+  const DEEP_THINKING = _IDLE_B;
+  const LISTENING    = _IDLE_B;
 
   const DEEP_THINK_AFTER_MS = 5000;
   const BUILD_MED_AFTER_MS  = 8000;
@@ -825,7 +829,7 @@ document.getElementById("bubbleNewTab").addEventListener("click", () => createTa
 
 const $bubble = document.getElementById("bubble");
 setInterval(() => {
-  $bubble.classList.toggle("rec", !!_recording);
+  $bubble.classList.toggle("rec", typeof _wakeArmed !== "undefined" && _wakeArmed);
   $bubble.classList.toggle("busy", state.tabs.some(t => t.activeRunId));
 }, 250);
 
@@ -2818,24 +2822,50 @@ function handleFinalChunk(rawText) {
   armSilenceTimer();
 }
 
-// ── TTS speaking-state hooks ───────────────────────────────────────────────
-// We gate wake-word detection while clawd is speaking. This works by
-// observing _ttsAudio (set in ttsPlayBlob) via inEchoWindow(). We also
-// poll periodically to update the status pill and stamp _lastSpokeTs as
-// audio drains, so the echo-tail window starts when speech actually ends.
+// ── Pill state poller ─────────────────────────────────────────────────────
+// We recompute the pill state continuously from observed signals
+// (_ttsAudio, tab.activeRunId, state.connected, _wakeArmed) so the pill
+// always reflects reality — no stuck "thinking" if a run completes without
+// TTS, no missed transitions, and we surface gateway disconnects loudly.
 setInterval(() => {
-  if (_ttsAudio) {
-    _lastSpokeTs = Date.now();
-    if (!$statusPill.classList.contains("speaking") && !_wakeArmed) {
-      setPillState("speaking", "clawd speaking…");
-    }
-  } else if ($statusPill.classList.contains("speaking")) {
-    if (Date.now() - _lastSpokeTs >= ECHO_TAIL_MS) {
-      setPillState(_wakeArmed ? "armed" : "listening",
-                   _wakeArmed ? "go on…" : 'listening for "okay claude"');
-    }
+  if (_ttsAudio) _lastSpokeTs = Date.now();
+  if (_wakeArmed) return;   // armed state is set imperatively in handleFinalChunk
+  const echoTail = _lastSpokeTs && (Date.now() - _lastSpokeTs < ECHO_TAIL_MS);
+  const speaking = !!_ttsAudio || echoTail;
+  const tab = (typeof currentTab === "function") ? currentTab() : null;
+  const running = tab && tab.activeRunId;
+  const connected = !!(state && state.connected);
+
+  if (speaking) {
+    setPillState("speaking", "clawd speaking…");
+  } else if (!connected) {
+    setPillState("error", "gateway disconnected");
+  } else if (running) {
+    setPillState("thinking", "thinking…");
+  } else {
+    setPillState("listening", 'listening for "okay claude"');
   }
 }, 200);
+
+// ── Diagnostics shortcut ──────────────────────────────────────────────────
+// Press D to dump connection/wake state to the console — easier than fishing
+// through __clawdState in devtools while debugging on a Zoom rehearsal.
+window.addEventListener("keydown", (e) => {
+  if (e.key !== "D" || !e.shiftKey || e.metaKey || e.ctrlKey) return;
+  const tab = (typeof currentTab === "function") ? currentTab() : null;
+  console.log("[clawd-video-chat]", {
+    connected: !!(state && state.connected),
+    wsUrl: state && state.config && state.config.wsUrl,
+    sessionKey: tab && tab.sessionKey,
+    activeRunId: tab && tab.activeRunId,
+    wakeArmed: _wakeArmed,
+    wakeBuf: _wakeBuf,
+    ttsAudio: !!_ttsAudio,
+    ttsEnabled: _ttsEnabled,
+    recogAlive: !!_recog,
+    paused: _wakeManuallyPaused,
+  });
+});
 
 // ── Manual mic button (fallback) ──────────────────────────────────────────
 // In dev mode the mic button toggles wake-word listening on/off so you can
