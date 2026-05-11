@@ -377,6 +377,12 @@
     width: 8px; height: 8px; border-radius: 50%;
     background: var(--fg2);
   }
+  body.obs #status-pill .wc {
+    color: var(--fg3);
+    font-variant-numeric: tabular-nums;
+    margin-left: 2px;
+  }
+  body.obs #status-pill .wc.growing { color: var(--ok); }
   body.obs #status-pill.listening .dot { background: var(--ok); animation: pulse 2s infinite; }
   body.obs #status-pill.armed     .dot { background: var(--accent2); animation: pulse 0.8s infinite; }
   body.obs #status-pill.speaking  .dot { background: var(--warn); }
@@ -491,6 +497,7 @@
 <div id="status-pill" class="listening">
   <span class="dot"></span>
   <span class="label">listening for "okay claude"</span>
+  <span class="wc" title="words in rolling 5-min transcript">(0)</span>
 </div>
 
 <!-- Diagnostic chip — top-left in OBS mode. Shows _ttsMode + connection. -->
@@ -3277,6 +3284,8 @@ function countTranscriptWords() {
   return n;
 }
 
+const $pillWc = document.querySelector("#status-pill .wc");
+let _wcPulseTimer = null;
 function renderTranscriptOverlay() {
   // Always update the badge counts (even when the overlay is hidden) so
   // toggling ?transcript=1 mid-session shows accurate numbers immediately.
@@ -3287,6 +3296,16 @@ function renderTranscriptOverlay() {
   const total = finalCount + interimCount;
   if ($transcriptEntries) $transcriptEntries.textContent = _transcript.length + (interimCount ? "+" : "");
   if ($transcriptWords) $transcriptWords.textContent = interimCount ? `${total} (+${interimCount})` : String(total);
+  // Bottom-center pill — visible in OBS mode. Update every render so the
+  // number grows as you speak.
+  if ($pillWc) {
+    $pillWc.textContent = `(${total})`;
+    if (interimCount > 0) {
+      $pillWc.classList.add("growing");
+      clearTimeout(_wcPulseTimer);
+      _wcPulseTimer = setTimeout(() => $pillWc.classList.remove("growing"), 700);
+    }
+  }
   if (!$transcriptRows) return;
   if (!document.body.classList.contains("show-transcript")) return;
   // Only render last 20 entries — older ones still in buffer but UI stays tight.
