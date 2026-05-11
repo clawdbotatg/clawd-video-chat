@@ -913,7 +913,45 @@ window.__stats = {
   model: null,
   turn: { in: 0, out: 0, cacheRead: 0, cacheCreate: 0 },
   session: { in: 0, out: 0, cacheRead: 0, cacheCreate: 0, turns: 0, cost: 0 },
+  // True when we've seen real `usage` data from the gateway — switches the
+  // chip from "(est)" to exact numbers. The OpenClaw gateway doesn't seem
+  // to forward LLM usage today, so this stays false and we estimate from
+  // text length (chars/4 ≈ tokens for English).
+  exact: false,
 };
+const CHARS_PER_TOKEN = 4;
+function estimateTokens(text) {
+  if (!text) return 0;
+  return Math.ceil(text.length / CHARS_PER_TOKEN);
+}
+
+// Called from onSend with the composed prompt (transcript + question).
+function recordInputEstimate(text) {
+  if (window.__stats.exact) return;   // real usage data has priority
+  const t = estimateTokens(text);
+  window.__stats.turn = { in: t, out: 0, cacheRead: 0, cacheCreate: 0 };
+  renderStatsChip();
+}
+
+// Called from handleChatEvent on every delta/final with the cumulative reply
+// text. We replace the turn's "out" estimate with the latest length so the
+// chip ticks up during streaming. On `final`, we roll the turn into session
+// totals and bump the turn counter + cost.
+function recordOutputEstimate(text, isFinal) {
+  if (window.__stats.exact) return;
+  const out = estimateTokens(text);
+  const turn = window.__stats.turn;
+  turn.out = out;
+  if (isFinal) {
+    const s = window.__stats.session;
+    s.in += turn.in;
+    s.out += turn.out;
+    s.turns += 1;
+    const p = modelPricing(window.__stats.model || "");
+    s.cost += turn.in * p.in / 1e6 + turn.out * p.out / 1e6;
+  }
+  renderStatsChip();
+}
 
 // Walk an arbitrary object and find the first usage block. Anthropic's shape
 // (input_tokens / output_tokens / cache_read_input_tokens / cache_creation_input_tokens)
@@ -977,6 +1015,12 @@ function findModelDeep(node, depth = 0) {
 
 function applyUsage(u, model, isFinal) {
   if (!u) return;
+  // Real usage data — switch the chip out of estimation mode. Reset cumulative
+  // totals so we don't double-count estimates we already added.
+  if (!window.__stats.exact) {
+    window.__stats.exact = true;
+    window.__stats.session = { in: 0, out: 0, cacheRead: 0, cacheCreate: 0, turns: 0, cost: 0 };
+  }
   if (model) window.__stats.model = model;
   // Treat each final-chat-event with usage as a "turn boundary": that usage
   // is the turn's TOTAL. We replace turn stats rather than accumulate.
@@ -1051,11 +1095,12 @@ function renderStatsChip() {
     if (n >= 1e3) return (n / 1e3).toFixed(1) + "K";
     return String(n);
   };
+  const tag = s.exact ? "" : " <span style='opacity:0.55'>est</span>";
   const modelDisplay = (s.model || "—").replace(/^bankr\//, "").replace(/^anthropic\//, "");
   root.querySelector(".stats-model").innerHTML =
     `<span>model</span><span>${modelDisplay}</span>`;
   root.querySelector(".stats-turn").innerHTML =
-    `<span>turn</span><span>↑${fmt(s.turn.in)} ↓${fmt(s.turn.out)}</span>`;
+    `<span>turn${tag}</span><span>↑${fmt(s.turn.in)} ↓${fmt(s.turn.out)}</span>`;
   root.querySelector(".stats-session").innerHTML =
     `<span>session · ${s.session.turns}t</span><span>↑${fmt(s.session.in)} ↓${fmt(s.session.out)}</span>`;
   const costStr = s.session.cost < 0.01
@@ -1786,6 +1831,8 @@ function handleChatEvent(payload) {
         if (chatState === "delta") clawdVid.chatting(text);
         t.lastText = text; t.textEl.innerHTML = renderText(text);
         if (tab === currentTab()) ttsFeed(text, chatState === "final");
+        // Stats chip — update output estimate so the chip ticks during stream.
+        recordOutputEstimate(text, chatState === "final");
       }
       if (Array.isArray(message.content)) {
         for (const b of message.content) {
@@ -2409,6 +2456,10 @@ async function onSend() {
 
   // New turn: clear any in-flight TTS / filler state from the prior turn.
   ttsReset();
+  // Estimate input tokens from the message about to be sent. This is what
+  // the WS frame carries (transcript context + user question). If we later
+  // see real `usage` data we'll switch the chip into exact mode.
+  recordInputEstimate(text);
   // Fire Haiku stall-talk in parallel with the real RPC so the user hears
   // an ack within ~1s instead of waiting for the main model's first token.
   // Opening the ack window buffers any real text deltas that arrive before
@@ -3394,6 +3445,7 @@ async function boot() {
       if (!state.config.bankrKey && cfg.bankrKey) state.config.bankrKey = cfg.bankrKey;
       _ttsMode = (cfg.ttsBackend && cfg.ttsBackend !== "none") ? cfg.ttsBackend : "browser";
       console.log("[tts] backend:", _ttsMode);
+      if (cfg.model) { window.__stats.model = cfg.model; renderStatsChip(); }
       applyTtsState();
     } catch (e) { console.warn("no /config endpoint", e); }
   } else {
@@ -3403,6 +3455,7 @@ async function boot() {
       const cfg = await resp.json();
       _ttsMode = (cfg.ttsBackend && cfg.ttsBackend !== "none") ? cfg.ttsBackend : "browser";
       console.log("[tts] backend:", _ttsMode);
+      if (cfg.model) { window.__stats.model = cfg.model; renderStatsChip(); }
       applyTtsState();
     } catch {}
   }

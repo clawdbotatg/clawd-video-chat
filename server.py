@@ -80,19 +80,39 @@ def tts_backend():
     return "none"
 
 
+def resolve_agent_model(cfg, session_key):
+    """Look up the agent's model by session key. sessionKey is `agent:<id>:<name>`."""
+    if not session_key:
+        return None
+    parts = session_key.split(":")
+    if len(parts) < 2 or parts[0] != "agent":
+        return None
+    agent_id = parts[1]
+    for a in (cfg.get("agents") or {}).get("list", []) or []:
+        if a.get("id") == agent_id:
+            return a.get("model")
+    # Fallback to default agent
+    for a in (cfg.get("agents") or {}).get("list", []) or []:
+        if a.get("default"):
+            return a.get("model")
+    return None
+
+
 def resolve_gateway_settings():
-    """Return {wsUrl, token, sessionKey, bankrKey, ttsBackend} — env vars override openclaw.json."""
+    """Return {wsUrl, token, sessionKey, bankrKey, ttsBackend, model} — env vars override openclaw.json."""
     cfg = load_openclaw_config()
     gateway = cfg.get("gateway", {})
     port = gateway.get("port", 18789)
     token = (gateway.get("auth", {}) or {}).get("token", "")
+    session_key = os.environ.get("OPENCLAW_SESSION_KEY") or "agent:clawd:main"
 
     return {
         "wsUrl": os.environ.get("OPENCLAW_WS_URL") or f"ws://127.0.0.1:{port}",
         "token": os.environ.get("OPENCLAW_TOKEN") or token,
-        "sessionKey": os.environ.get("OPENCLAW_SESSION_KEY") or "agent:clawd:main",
+        "sessionKey": session_key,
         "bankrKey": os.environ.get("BANKR_LLM_KEY") or "",
         "ttsBackend": tts_backend(),
+        "model": resolve_agent_model(cfg, session_key) or "",
     }
 
 
