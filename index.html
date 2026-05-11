@@ -410,6 +410,57 @@
   }
   #fallback-toast.show { display: block; }
 
+  /* ── Stats chip (top-right) ───────────────────────────────────────────
+     Model + token usage + estimated cost. Always visible in OBS mode
+     unless ?nostats=1. */
+  #stats-chip {
+    display: none;
+    position: fixed; top: 16px; right: 16px;
+    min-width: 220px;
+    background: rgba(0,0,0,0.65); color: var(--fg2);
+    padding: 8px 12px; border-radius: 8px;
+    font-family: var(--font-mono); font-size: 11px; line-height: 1.45;
+    z-index: 10000; pointer-events: none;
+  }
+  body.obs #stats-chip { display: block; }
+  body.obs.hide-stats #stats-chip,
+  body.hide-status #stats-chip { display: none; }
+  #stats-chip .stats-row { display: flex; justify-content: space-between; gap: 12px; }
+  #stats-chip .stats-model { color: var(--fg); font-weight: 600; margin-bottom: 4px; }
+  #stats-chip .stats-cost { color: var(--ok); margin-top: 4px; font-weight: 600; }
+
+  /* ── Rolling transcript overlay (top-right, below stats) ──────────────
+     Off by default. Toggle on with ?dev=1 or ?transcript=1. */
+  #transcript-overlay {
+    display: none;
+    position: fixed; top: 124px; right: 16px;
+    width: 320px; max-height: 60vh;
+    background: rgba(0,0,0,0.65); color: var(--fg2);
+    padding: 8px 12px; border-radius: 8px;
+    font-family: var(--font-mono); font-size: 11px; line-height: 1.4;
+    z-index: 10000; pointer-events: none;
+    overflow: hidden;
+  }
+  body.show-transcript #transcript-overlay { display: block; }
+  #transcript-overlay .transcript-title {
+    color: var(--fg3); font-size: 10px;
+    text-transform: uppercase; letter-spacing: 0.06em;
+    margin-bottom: 6px;
+    display: flex; justify-content: space-between; gap: 8px;
+  }
+  #transcript-overlay .transcript-meta {
+    color: var(--fg2); font-weight: 600;
+    font-variant-numeric: tabular-nums;
+    text-transform: none; letter-spacing: 0;
+  }
+  #transcript-overlay .transcript-rows .row {
+    padding: 2px 0;
+  }
+  #transcript-overlay .transcript-rows .row .age {
+    color: var(--fg3); margin-right: 6px;
+    font-variant-numeric: tabular-nums;
+  }
+
   /* ── Click-to-start overlay (autoplay gate) ──────────────────────────── */
   #audio-unlock {
     position: fixed; inset: 0;
@@ -445,8 +496,27 @@
 <!-- Diagnostic chip — top-left in OBS mode. Shows _ttsMode + connection. -->
 <div id="diag-chip">tts=…</div>
 
+<!-- Stats chip — top-right in OBS mode. Surfaces model, token usage, cost
+     pulled live from incoming WS frames. Toggleable with ?nostats=1. -->
+<div id="stats-chip">
+  <div class="stats-row stats-model">model: …</div>
+  <div class="stats-row stats-turn">turn: —</div>
+  <div class="stats-row stats-session">session: —</div>
+  <div class="stats-row stats-cost">~$0.00</div>
+</div>
+
 <!-- Big red toast that flashes if we ever fall back to browser TTS. -->
 <div id="fallback-toast">⚠ browser TTS fallback in use — ElevenLabs not active</div>
+
+<!-- Rolling room transcript (last ~5 min). Only visible in ?dev=1 or
+     ?transcript=1 mode — clawd sees this regardless on every wake-word turn. -->
+<div id="transcript-overlay">
+  <div class="transcript-title">
+    <span>room transcript (last 5 min)</span>
+    <span class="transcript-meta"><span class="t-entries">0</span> lines · <span class="t-words">0</span> words</span>
+  </div>
+  <div class="transcript-rows"></div>
+</div>
 
 <!-- Click-to-start overlay. Chrome's autoplay policy blocks audio.play()
      until the user clicks on the page once — required even with mic perms.
@@ -812,6 +882,122 @@ const clawdVid = (() => {
 
 if (new URLSearchParams(location.search).has("debug")) window.__clawdDebug = true;
 window.__eventLog = [];
+
+// ── Token / cost tracking ─────────────────────────────────────────────────
+// Pricing in $ per 1M tokens — pulled from the existing modelPicker, with
+// opus-4.7 priced same as opus-4.6 until we have a real rate sheet.
+const MODEL_PRICING = {
+  "bankr/claude-opus-4.7":   { in: 5.00, out: 25.00, cacheRead: 0.50, cacheWrite: 6.25 },
+  "bankr/claude-opus-4.6":   { in: 5.00, out: 25.00, cacheRead: 0.50, cacheWrite: 6.25 },
+  "bankr/claude-sonnet-4.6": { in: 3.00, out: 15.00, cacheRead: 0.30, cacheWrite: 3.75 },
+  "bankr/claude-haiku-4.5":  { in: 1.00, out:  5.00, cacheRead: 0.10, cacheWrite: 1.25 },
+  "bankr/kimi-k2.6":         { in: 0.95, out:  4.00, cacheRead: 0.10, cacheWrite: 1.19 },
+  "bankr/minimax-m2.7":      { in: 0.30, out:  1.20, cacheRead: 0.03, cacheWrite: 0.38 },
+  "bankr/deepseek-v4-pro":   { in: 1.74, out:  3.48, cacheRead: 0.17, cacheWrite: 2.18 },
+  "anthropic/claude-opus-4-7":  { in: 15.00, out: 75.00, cacheRead: 1.50, cacheWrite: 18.75 },
+  "anthropic/claude-opus-4-6":  { in: 15.00, out: 75.00, cacheRead: 1.50, cacheWrite: 18.75 },
+  "anthropic/claude-sonnet-4-6": { in:  3.00, out: 15.00, cacheRead: 0.30, cacheWrite:  3.75 },
+};
+function modelPricing(model) {
+  return MODEL_PRICING[model] || { in: 5, out: 25, cacheRead: 0.5, cacheWrite: 6.25 };
+}
+
+window.__stats = {
+  model: null,
+  turn: { in: 0, out: 0, cacheRead: 0, cacheCreate: 0 },
+  session: { in: 0, out: 0, cacheRead: 0, cacheCreate: 0, turns: 0, cost: 0 },
+};
+
+// Walk an arbitrary object and find the first usage block. Anthropic's shape
+// (input_tokens / output_tokens / cache_read_input_tokens / cache_creation_input_tokens)
+// is what bankr proxies forward; some events use OpenAI's shape
+// (prompt_tokens / completion_tokens). We accept either.
+function findUsageDeep(node, depth = 0) {
+  if (!node || typeof node !== "object" || depth > 8) return null;
+  // Direct hit: this node looks like a usage record.
+  const direct = parseUsage(node);
+  if (direct) return direct;
+  // Common parent keys.
+  if (node.usage) { const u = parseUsage(node.usage); if (u) return u; }
+  if (node.tokenUsage) { const u = parseUsage(node.tokenUsage); if (u) return u; }
+  // Recurse into children.
+  for (const k of Object.keys(node)) {
+    const v = node[k];
+    if (v && typeof v === "object") {
+      const u = findUsageDeep(v, depth + 1);
+      if (u) return u;
+    }
+  }
+  return null;
+}
+function parseUsage(o) {
+  if (!o || typeof o !== "object") return null;
+  // Anthropic / bankr-claude shape.
+  if ("input_tokens" in o || "output_tokens" in o) {
+    return {
+      in: Number(o.input_tokens || 0),
+      out: Number(o.output_tokens || 0),
+      cacheRead: Number(o.cache_read_input_tokens || 0),
+      cacheCreate: Number(o.cache_creation_input_tokens || 0),
+    };
+  }
+  // OpenAI / generic shape.
+  if ("prompt_tokens" in o || "completion_tokens" in o) {
+    return {
+      in: Number(o.prompt_tokens || 0),
+      out: Number(o.completion_tokens || 0),
+      cacheRead: Number(o.cached_tokens || o.prompt_tokens_cached || 0),
+      cacheCreate: 0,
+    };
+  }
+  return null;
+}
+
+// Walk an object looking for a model identifier. Last-seen wins.
+function findModelDeep(node, depth = 0) {
+  if (!node || typeof node !== "object" || depth > 6) return null;
+  if (typeof node.model === "string") return node.model;
+  if (typeof node.modelId === "string") return node.modelId;
+  for (const k of Object.keys(node)) {
+    const v = node[k];
+    if (v && typeof v === "object") {
+      const m = findModelDeep(v, depth + 1);
+      if (m) return m;
+    }
+  }
+  return null;
+}
+
+function applyUsage(u, model, isFinal) {
+  if (!u) return;
+  if (model) window.__stats.model = model;
+  // Treat each final-chat-event with usage as a "turn boundary": that usage
+  // is the turn's TOTAL. We replace turn stats rather than accumulate.
+  if (isFinal) {
+    window.__stats.turn = { ...u };
+    window.__stats.session.in += u.in;
+    window.__stats.session.out += u.out;
+    window.__stats.session.cacheRead += u.cacheRead;
+    window.__stats.session.cacheCreate += u.cacheCreate;
+    window.__stats.session.turns += 1;
+    const p = modelPricing(window.__stats.model || "");
+    window.__stats.session.cost += (
+      u.in          * p.in         / 1e6 +
+      u.out         * p.out        / 1e6 +
+      u.cacheRead   * p.cacheRead  / 1e6 +
+      u.cacheCreate * p.cacheWrite / 1e6
+    );
+  } else {
+    // Mid-stream usage event (some providers emit running totals): keep the
+    // highest values we've seen for the current turn so the UI shows growth.
+    window.__stats.turn.in          = Math.max(window.__stats.turn.in,          u.in);
+    window.__stats.turn.out         = Math.max(window.__stats.turn.out,         u.out);
+    window.__stats.turn.cacheRead   = Math.max(window.__stats.turn.cacheRead,   u.cacheRead);
+    window.__stats.turn.cacheCreate = Math.max(window.__stats.turn.cacheCreate, u.cacheCreate);
+  }
+  renderStatsChip();
+}
+
 (function installWsTap() {
   const _OrigWS = window.WebSocket;
   function TappedWS(...args) {
@@ -819,9 +1005,20 @@ window.__eventLog = [];
     s.addEventListener("message", (ev) => {
       try {
         const f = JSON.parse(ev.data);
+        // Original event log (kept for ?debug=1 inspection).
         if (f?.type === "event" && (f.event === "agent" || f.event === "chat")) {
           window.__eventLog.push({ event: f.event, payload: f.payload, ts: Date.now() });
           if (window.__eventLog.length > 500) window.__eventLog.shift();
+        }
+        // Token-usage extraction. Look in any frame for usage / tokens / model.
+        const usage = findUsageDeep(f);
+        const model = findModelDeep(f);
+        if (usage) {
+          const isFinal = f?.payload?.state === "final" || f?.event === "chat" && f?.payload?.state === "final";
+          applyUsage(usage, model, !!isFinal);
+        } else if (model && model !== window.__stats.model) {
+          window.__stats.model = model;
+          renderStatsChip();
         }
       } catch {}
     });
@@ -834,6 +1031,33 @@ window.__eventLog = [];
   TappedWS.CLOSED = _OrigWS.CLOSED;
   window.WebSocket = TappedWS;
 })();
+
+// Render the stats chip from window.__stats. Called on every WS frame that
+// changes usage, and once on boot. Safe before DOM is fully attached — bails
+// silently if the chip element isn't there yet.
+function renderStatsChip() {
+  const root = document.getElementById("stats-chip");
+  if (!root) return;
+  const s = window.__stats;
+  const fmt = (n) => {
+    if (n >= 1e6) return (n / 1e6).toFixed(2) + "M";
+    if (n >= 1e3) return (n / 1e3).toFixed(1) + "K";
+    return String(n);
+  };
+  const modelDisplay = (s.model || "—").replace(/^bankr\//, "").replace(/^anthropic\//, "");
+  root.querySelector(".stats-model").innerHTML =
+    `<span>model</span><span>${modelDisplay}</span>`;
+  root.querySelector(".stats-turn").innerHTML =
+    `<span>turn</span><span>↑${fmt(s.turn.in)} ↓${fmt(s.turn.out)}</span>`;
+  root.querySelector(".stats-session").innerHTML =
+    `<span>session · ${s.session.turns}t</span><span>↑${fmt(s.session.in)} ↓${fmt(s.session.out)}</span>`;
+  const costStr = s.session.cost < 0.01
+    ? `~$${s.session.cost.toFixed(4)}`
+    : `~$${s.session.cost.toFixed(2)}`;
+  root.querySelector(".stats-cost").innerHTML =
+    `<span>est cost</span><span>${costStr}</span>`;
+}
+renderStatsChip();
 
 const DEFAULT_MODEL = "bankr/claude-sonnet-4.6";
 
@@ -2779,6 +3003,8 @@ const WAKE_RE = /\b(okay|ok)[\s,]+(claude|clawd|claud|cloud|clyde|clod|claud[oe]
 const SILENCE_MS = 1500;            // how long to wait after wake before submitting
 const ECHO_TAIL_MS = 800;            // ignore SR for this long after TTS audio ends
 const RESTART_DELAY_MS = 250;        // backoff before restarting after onend
+const TRANSCRIPT_MAX_AGE_MS = 5 * 60 * 1000;   // 5 minutes of room context
+const TRANSCRIPT_MAX_ENTRIES = 80;             // hard cap so prompts don't bloat
 
 let _recog = null;
 let _wakeArmed = false;       // wake word heard; capturing the prompt
@@ -2787,6 +3013,45 @@ let _silenceTimer = null;
 let _restartTimer = null;
 let _lastSpokeTs = 0;         // Date.now() of last TTS audio activity (echo gate)
 let _wakeManuallyPaused = false;  // user clicked the mic to take over
+
+// Rolling room transcript — every finalized SR chunk lands here (gated by
+// the echo window so clawd's own voice isn't captured as user speech).
+// When the wake word fires we prepend this buffer to the prompt so clawd
+// can answer "what's the magic number?" by looking at what was said earlier.
+const _transcript = [];
+// What's currently being said but hasn't finalized yet. Updates many times
+// per second while you speak, then clears when the chunk finalizes. Only
+// used for live UI feedback; never sent to clawd.
+let _liveInterim = "";
+
+function pushTranscript(text) {
+  text = (text || "").trim();
+  if (!text) return;
+  _transcript.push({ ts: Date.now(), text });
+  trimTranscript();
+  renderTranscriptOverlay();
+}
+
+function trimTranscript() {
+  const cutoff = Date.now() - TRANSCRIPT_MAX_AGE_MS;
+  while (_transcript.length && _transcript[0].ts < cutoff) _transcript.shift();
+  while (_transcript.length > TRANSCRIPT_MAX_ENTRIES) _transcript.shift();
+}
+
+function buildTranscriptContext() {
+  trimTranscript();
+  if (!_transcript.length) return "";
+  const now = Date.now();
+  const lines = _transcript.map(e => {
+    const ago = Math.max(0, Math.round((now - e.ts) / 1000));
+    return `[${ago}s ago] ${e.text}`;
+  });
+  return [
+    "Recent room transcript (mic-derived, may contain mishearings; most recent at bottom):",
+    ...lines.map(l => "  " + l),
+    "",
+  ].join("\n");
+}
 
 function setPillState(state, label) {
   if (!$statusPill) return;
@@ -2827,11 +3092,14 @@ function startWakeRecog() {
 
   r.onresult = (e) => {
     if (inEchoWindow()) return;
+    let interim = "";
     for (let i = e.resultIndex; i < e.results.length; i++) {
       const res = e.results[i];
-      if (!res.isFinal) continue;
-      handleFinalChunk(res[0].transcript);
+      if (res.isFinal) handleFinalChunk(res[0].transcript);
+      else interim += res[0].transcript;
     }
+    _liveInterim = interim.trim();
+    renderTranscriptOverlay();
   };
 
   r.onerror = (e) => {
@@ -2880,7 +3148,15 @@ function submitWakeBuffer() {
     setPillState("listening", 'listening for "okay claude"');
     return;
   }
-  $input.value = prompt;
+  // Build the message we send to clawd: rolling room transcript on top,
+  // then the explicit question the wake-word phrase introduced. Clawd
+  // sees the conversational context and can back-reference earlier
+  // utterances ("what was the magic number?").
+  const ctx = buildTranscriptContext();
+  const composed = ctx
+    ? `${ctx}\n[just now, addressed to you]: ${prompt}`
+    : prompt;
+  $input.value = composed;
   autosize($input);
   setPillState("thinking", "thinking…");
   onSend();
@@ -2889,6 +3165,10 @@ function submitWakeBuffer() {
 function handleFinalChunk(rawText) {
   const text = (rawText || "").trim();
   if (!text) return;
+  // Always capture into the rolling transcript so clawd has context for
+  // back-references like "what's the magic number?". Inserted regardless
+  // of whether this chunk contains the wake word.
+  pushTranscript(text);
   if (!_wakeArmed) {
     const m = text.match(WAKE_RE);
     if (!m) return;
@@ -2980,6 +3260,52 @@ function flashBrowserFallbackWarning() {
     $fallbackToast.classList.remove("show");
   }, 10000);
 }
+
+// ── Rolling transcript overlay renderer ─────────────────────────────────
+const $transcriptRows = document.querySelector("#transcript-overlay .transcript-rows");
+const $transcriptEntries = document.querySelector("#transcript-overlay .t-entries");
+const $transcriptWords = document.querySelector("#transcript-overlay .t-words");
+
+function countWords(text) {
+  if (!text) return 0;
+  const m = text.match(/\S+/g);
+  return m ? m.length : 0;
+}
+function countTranscriptWords() {
+  let n = 0;
+  for (const e of _transcript) n += countWords(e.text);
+  return n;
+}
+
+function renderTranscriptOverlay() {
+  // Always update the badge counts (even when the overlay is hidden) so
+  // toggling ?transcript=1 mid-session shows accurate numbers immediately.
+  // Word count includes the live in-flight interim so it grows in real time
+  // as you speak — that's the "I know it's listening" feedback.
+  const finalCount = countTranscriptWords();
+  const interimCount = countWords(_liveInterim);
+  const total = finalCount + interimCount;
+  if ($transcriptEntries) $transcriptEntries.textContent = _transcript.length + (interimCount ? "+" : "");
+  if ($transcriptWords) $transcriptWords.textContent = interimCount ? `${total} (+${interimCount})` : String(total);
+  if (!$transcriptRows) return;
+  if (!document.body.classList.contains("show-transcript")) return;
+  // Only render last 20 entries — older ones still in buffer but UI stays tight.
+  const escape = (s) => s.replace(/[&<>"']/g, c =>
+    ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", "\"": "&quot;", "'": "&#39;" }[c]));
+  const now = Date.now();
+  const recent = _transcript.slice(-20);
+  let html = recent.map(e => {
+    const ago = Math.max(0, Math.round((now - e.ts) / 1000));
+    const ageLabel = ago < 60 ? `${ago}s` : `${Math.round(ago / 60)}m`;
+    return `<div class="row"><span class="age">${ageLabel}</span>${escape(e.text)}</div>`;
+  }).join("");
+  if (_liveInterim) {
+    html += `<div class="row" style="opacity:0.6;font-style:italic"><span class="age">…</span>${escape(_liveInterim)}</div>`;
+  }
+  $transcriptRows.innerHTML = html;
+}
+// Refresh age labels (and trim aged-out entries) every 5s even with no new chunks.
+setInterval(() => { trimTranscript(); renderTranscriptOverlay(); }, 5000);
 
 // ── Manual mic button (fallback) ──────────────────────────────────────────
 // In dev mode the mic button toggles wake-word listening on/off so you can
@@ -3114,6 +3440,12 @@ window.__clawdState = state;
   const params = new URLSearchParams(location.search);
   if (params.has("dev")) document.body.classList.remove("obs");
   if (params.has("nostatus")) document.body.classList.add("hide-status");
+  // Show the rolling room transcript overlay (top-right). Defaults on in
+  // dev mode; toggle with ?transcript=1 / ?transcript=0 to override.
+  const wantTranscript = params.has("transcript")
+    ? params.get("transcript") !== "0"
+    : params.has("dev");
+  if (wantTranscript) document.body.classList.add("show-transcript");
 
   // Force TTS on for video-chat — there's no fallback UI to click 🔊.
   if (!_ttsEnabled) {
