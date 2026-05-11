@@ -1141,12 +1141,26 @@ renderStatsChip();
 // ── Real session-stats fetch ──────────────────────────────────────────────
 // Calls our /api/session-stats endpoint which shells out to `openclaw
 // sessions --json` for the active sessionKey. Real totalTokens replaces the
-// char-based estimates. Cost estimate is conservative: assumes each turn's
-// input charge ≈ totalTokens-before-turn (the model re-reads the whole
-// history every turn) plus the new user message, and output ≈ delta minus
-// the user message. Anthropic prompt-caching would actually make
-// subsequent-turn input ~10× cheaper, so this overestimates if cache is hit.
-async function fetchSessionStats() {
+// char-based estimates.
+//
+// Cost model:
+//   - Cold open (no prior context):
+//       input = totalTokens - assistantReplyTokens   @ full input rate
+//       output = assistantReplyTokens                @ output rate
+//   - Follow-up (prior context exists):
+//       cacheRead = prevTotalTokens                  @ cache-read rate ($0.50/M)
+//       freshIn   = (delta - replyTokens)            @ full input rate
+//       output    = replyTokens                      @ output rate
+//
+// replyTokens comes from window.__stats.turn.out (estimated from the
+// assistant's text via recordOutputEstimate during streaming). The cost
+// breakdown isn't exact (real cache-hit ratio varies, cache-write surcharge
+// isn't modeled, tool I/O accounting is approximate) but on the bankr/
+// anthropic A/B against real billing it tracks within a few percent.
+//
+// Pass {countCost:false} on the boot fetch — at page load we don't know
+// what those tokens came from, so just baseline and don't credit cost.
+async function fetchSessionStats({ countCost = true } = {}) {
   try {
     const res = await fetch("/api/session-stats");
     if (!res.ok) return;
@@ -1155,25 +1169,42 @@ async function fetchSessionStats() {
     const tokens = d.tokens;
     if (tokens == null) return;  // session exists but no chat yet
     const r = window.__stats.real;
-    const prev = r.prevTotalTokens;
     r.contextTokens = d.contextTokens || r.contextTokens;
     r.sessionId = d.sessionId || r.sessionId;
     r.totalTokens = tokens;
-    if (prev == null) {
-      // First-ever fetch — just baseline, no cost added.
-      r.prevTotalTokens = tokens;
-    } else if (tokens > prev) {
-      const delta = tokens - prev;
-      const userMsgTokens = window.__stats.turn.in || 0;
-      const inputCharged = prev + userMsgTokens;
-      const outputCharged = Math.max(0, delta - userMsgTokens);
-      const p = modelPricing(window.__stats.model || "");
-      const turnCost = inputCharged * p.in / 1e6 + outputCharged * p.out / 1e6;
-      r.cost += turnCost;
-      r.prevTotalTokens = tokens;
-      window.__stats.turn._realDelta = delta;
-      window.__stats.session.turns += 1;
+    const prev = r.prevTotalTokens;
+
+    // Boot fetch or no-op fetch — just snapshot tokens, don't credit cost.
+    if (!countCost || (prev != null && tokens === prev)) {
+      if (prev == null) r.prevTotalTokens = tokens;
+      renderStatsChip();
+      return;
     }
+
+    const replyTokens = window.__stats.turn.out || 0;
+    const p = modelPricing(window.__stats.model || "");
+    let turnCost = 0;
+    let delta;
+
+    if (prev == null) {
+      // Cold-open turn: no prior context to cache.
+      delta = tokens;
+      const inputTokens = Math.max(0, tokens - replyTokens);
+      turnCost = inputTokens * p.in / 1e6 + replyTokens * p.out / 1e6;
+    } else {
+      // Follow-up turn: prior session contents are re-sent but cache-hit.
+      delta = tokens - prev;
+      const cacheReadTokens = prev;
+      const freshInputTokens = Math.max(0, delta - replyTokens);
+      turnCost = cacheReadTokens * p.cacheRead / 1e6
+               + freshInputTokens * p.in / 1e6
+               + replyTokens * p.out / 1e6;
+    }
+
+    r.cost += turnCost;
+    r.prevTotalTokens = tokens;
+    window.__stats.turn._realDelta = delta;
+    window.__stats.session.turns += 1;
     renderStatsChip();
   } catch (e) {
     if (window.__clawdDebug) console.warn("[session-stats]", e);
@@ -3573,8 +3604,10 @@ async function boot() {
 window.__clawdState = state;
 
 // One initial pull so the stats chip shows whatever's already in the session
-// (in case the user reloaded mid-conversation).
-setTimeout(fetchSessionStats, 1500);
+// (in case the user reloaded mid-conversation). countCost:false because we
+// don't know which model / which provider previously generated those tokens,
+// so crediting their cost to this page-load would be misleading.
+setTimeout(() => fetchSessionStats({ countCost: false }), 1500);
 
 // ── clawd-video-chat boot extras ───────────────────────────────────────────
 // 1) ?dev=1 in the URL drops OBS mode and reveals the full chat UI for debugging.
