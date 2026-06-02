@@ -403,6 +403,94 @@
   body.obs #diag-chip { display: block; }
   body.obs.hide-status #diag-chip { display: none; }
 
+  /* ── Audio meters (bottom-left) — live VU bars so you can see the mic
+     input level and clawd's TTS output level. Visible in OBS mode; hidden
+     with ?nostatus=1 alongside the other diagnostic chips. */
+  #audio-meters {
+    display: none;
+    position: fixed; bottom: 16px; left: 16px;
+    width: 200px;
+    background: rgba(0,0,0,0.55);
+    padding: 8px 10px; border-radius: 8px;
+    font-family: var(--font-mono); font-size: 10px; line-height: 1.2;
+    color: var(--fg2);
+    z-index: 10000; pointer-events: none;
+  }
+  body.obs #audio-meters,
+  body:not(.obs) #audio-meters { display: block; }
+  body.obs.hide-status #audio-meters { display: none; }
+  #audio-meters .meter {
+    display: flex; align-items: center; gap: 6px;
+    margin: 2px 0;
+  }
+  #audio-meters .meter .lbl {
+    width: 44px; flex-shrink: 0;
+    color: var(--fg3);
+    letter-spacing: 0.04em;
+  }
+  #audio-meters .meter .bar {
+    flex: 1; height: 6px;
+    background: rgba(255,255,255,0.08);
+    border-radius: 3px; overflow: hidden;
+    position: relative;
+  }
+  #audio-meters .meter .bar-fill {
+    height: 100%; width: 0%;
+    background: linear-gradient(90deg, var(--ok) 0%, var(--ok) 60%, var(--warn) 80%, var(--bad) 100%);
+    transition: width 0.04s linear;
+  }
+  #audio-meters .meter.idle .bar-fill { opacity: 0.35; }
+  #audio-meters .routing {
+    margin-top: 6px; padding-top: 6px;
+    border-top: 1px solid rgba(255,255,255,0.06);
+    font-size: 9px; line-height: 1.4;
+    color: var(--fg3);
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  #audio-meters .routing .ok { color: var(--ok); }
+  #audio-meters .routing .warn { color: var(--warn); }
+
+  /* ── In-page tone test panel (bottom-right) ──────────────────────────────
+     Three buttons that play test tones via different routing paths so we
+     can isolate any leak from BH-2ch back to the MIC bar. All buttons use
+     clawd's own AudioContext (which has setSinkId pre-routed to BH-2ch)
+     so we're testing the EXACT same audio plumbing clawd uses for TTS.
+     Hidden in OBS mode (default) — would show up in the virtual cam feed.
+     Toggle on with ?leaktests=1 or by adding the class .show-leaktests. */
+  #tone-tests { display: none; }
+  body.show-leaktests #tone-tests {
+    display: block;
+    position: fixed; bottom: 16px; right: 16px;
+    background: rgba(0,0,0,0.55);
+    padding: 10px 12px; border-radius: 8px;
+    font-family: var(--font-mono); font-size: 10px; line-height: 1.4;
+    color: var(--fg2);
+    z-index: 10000;
+  }
+  #tone-tests .title {
+    color: var(--fg3); margin-bottom: 6px;
+    text-transform: uppercase; letter-spacing: 0.04em;
+  }
+  #tone-tests button {
+    display: block; width: 100%;
+    background: rgba(255,255,255,0.07);
+    border: 1px solid rgba(255,255,255,0.15);
+    color: var(--fg);
+    font: inherit;
+    text-align: left;
+    padding: 6px 8px;
+    margin: 3px 0;
+    border-radius: 5px;
+    cursor: pointer;
+  }
+  #tone-tests button:hover { background: rgba(255,255,255,0.14); }
+  #tone-tests button:disabled { opacity: 0.4; cursor: not-allowed; }
+  #tone-tests .verdict {
+    margin-top: 4px;
+    color: var(--fg3);
+    font-size: 9px;
+  }
+
   /* ── Fallback toast — flashes red if browser TTS path ever fires.
      Auto-shows for 10s when flashBrowserFallbackWarning() runs. */
   #fallback-toast {
@@ -460,6 +548,55 @@
     border-color: var(--accent);
     font-weight: 600;
   }
+
+  /* ── Paste-to-clawd text input (top-center) ──────────────────────────────
+     A small text input for handing clawd links, skill paths, or any prompt
+     by keyboard rather than voice. Submits via the same onSend() the wake
+     word uses, so the message goes through the normal chat path.
+     Visible in OBS mode by default; hidden alongside other status chrome
+     when ?nostatus=1 is set. */
+  #paste-box {
+    display: none;
+    position: fixed; top: 16px; left: 50%; transform: translateX(-50%);
+    background: rgba(0,0,0,0.65);
+    padding: 6px 8px; border-radius: 8px;
+    z-index: 10000;
+    align-items: flex-end; gap: 6px;
+    font-family: var(--font-mono); font-size: 12px;
+  }
+  body.obs #paste-box { display: flex; }
+  body.obs.hide-status #paste-box { display: none; }
+  #paste-box textarea {
+    width: 380px;
+    background: rgba(255,255,255,0.08);
+    border: 1px solid rgba(255,255,255,0.15);
+    color: var(--fg);
+    padding: 6px 10px;
+    font: inherit;
+    line-height: 1.4;
+    border-radius: 4px;
+    outline: none;
+    resize: none;
+    min-height: 30px;
+    max-height: 240px;
+    overflow-y: auto;
+  }
+  #paste-box textarea::placeholder { color: var(--fg3); }
+  #paste-box textarea:focus {
+    border-color: var(--accent2);
+    background: rgba(255,255,255,0.12);
+  }
+  #paste-box button {
+    background: var(--accent);
+    color: #fff;
+    border: 1px solid var(--accent);
+    padding: 6px 10px;
+    font: inherit;
+    font-weight: 600;
+    border-radius: 4px;
+    cursor: pointer;
+  }
+  #paste-box button:hover { background: var(--accent2); border-color: var(--accent2); }
 
   /* ── Rolling transcript overlay (top-right, below stats) ──────────────
      Off by default. Toggle on with ?dev=1 or ?transcript=1. */
@@ -522,12 +659,44 @@
 <!-- Status pill — only visible in OBS mode. Reflects wake-word listener state. -->
 <div id="status-pill" class="listening">
   <span class="dot"></span>
-  <span class="label">listening for "okay claude"</span>
+  <span class="label">listening for "okay/so claude"</span>
   <span class="wc" title="words in rolling 5-min transcript">(0)</span>
 </div>
 
 <!-- Diagnostic chip — top-left in OBS mode. Shows _ttsMode + connection. -->
 <div id="diag-chip">tts=…</div>
+
+<!-- Audio meters — bottom-left. Three lanes:
+       MIC  : raw mic level (smooth VU off our own getUserMedia analyser)
+       SR   : speech-recognizer activity (pulses on each onresult)
+       OUT  : TTS playback level (off the shared spkAnalyser)
+     Lets you see "mic open?" and "SR receiving?" independently — if MIC
+     is moving but SR is dead, another tab/app is hogging the device. -->
+<div id="audio-meters">
+  <div class="meter mic idle">
+    <span class="lbl">🎤 MIC</span>
+    <div class="bar"><div class="bar-fill"></div></div>
+  </div>
+  <div class="meter speech idle">
+    <span class="lbl">🗣️ SR</span>
+    <div class="bar"><div class="bar-fill"></div></div>
+  </div>
+  <div class="meter spk idle">
+    <span class="lbl">🔊 OUT</span>
+    <div class="bar"><div class="bar-fill"></div></div>
+  </div>
+  <div class="routing">routing: …</div>
+</div>
+
+<!-- Tone test panel — uses clawd's own audio context (with setSinkId
+     already routed to BH-2ch) so we can verify what actually leaks where. -->
+<div id="tone-tests">
+  <div class="title">🔬 leak tests</div>
+  <button id="tone-buf"  disabled>play 440 Hz → BH-2ch (BufferSource)</button>
+  <button id="tone-tts"  disabled>play 554 Hz → BH-2ch (TTS path)</button>
+  <button id="tone-dflt" disabled>play 660 Hz → DEFAULT (BH-16ch)</button>
+  <div class="verdict">first two should NOT spike the MIC bar.<br>last one SHOULD spike it (control).</div>
+</div>
 
 <!-- Stats chip — top-right in OBS mode. Surfaces model, token usage, cost
      pulled live from incoming WS frames. Toggleable with ?nostats=1. -->
@@ -537,7 +706,7 @@
   <div class="stats-row stats-session">session: —</div>
   <div class="stats-row stats-cost">~$0.00</div>
   <div class="model-picker">
-    <button data-model="bankr/claude-opus-4.7"   title="Opus 4.7 — $5/$25 per M">opus</button>
+    <button data-model="bankr/claude-opus-4.8"   title="Opus 4.8 — $5/$25 per M">opus</button>
     <button data-model="bankr/claude-sonnet-4.6" title="Sonnet 4.6 — $3/$15 per M">sonnet</button>
     <button data-model="bankr/kimi-k2.6"         title="Kimi K2.6 — $0.95/$4 per M">kimi</button>
   </div>
@@ -545,6 +714,14 @@
 
 <!-- Big red toast that flashes if we ever fall back to browser TTS. -->
 <div id="fallback-toast">⚠ browser TTS fallback in use — ElevenLabs not active</div>
+
+<!-- Paste-to-clawd text input. Paste a link, skill path, or any prompt;
+     Enter submits via the same path the wake word uses. Hidden with
+     ?nostatus=1 alongside the other diagnostic chrome. -->
+<div id="paste-box">
+  <textarea id="paste-input" rows="1" placeholder="paste link, skill path, or prompt for clawd… (⇧↵ for newline)" autocomplete="off" spellcheck="false"></textarea>
+  <button type="button" id="paste-send">send</button>
+</div>
 
 <!-- Rolling room transcript (last ~5 min). Only visible in ?dev=1 or
      ?transcript=1 mode — clawd sees this regardless on every wake-word turn. -->
@@ -614,7 +791,9 @@
             <option value="bankr/claude-haiku-4.5">Haiku · $1/$5</option>
             <option value="bankr/deepseek-v4-pro">DeepSeek V4 Pro · $1.74/$3.48</option>
             <option value="bankr/claude-sonnet-4.6">Sonnet · $3/$15</option>
-            <option value="bankr/claude-opus-4.6">Opus · $5/$25</option>
+            <option value="bankr/claude-opus-4.8">Opus 4.8 · $5/$25</option>
+            <option value="bankr/claude-opus-4.7">Opus 4.7 · $5/$25</option>
+            <option value="bankr/claude-opus-4.6">Opus 4.6 · $5/$25</option>
           </select>
           <button class="sb-btn" type="button" id="btnSpeak" title="TTS off — click to enable">🔇</button>
           <button class="sb-btn" type="button" id="btnMic" title="Voice input">🎤</button>
@@ -925,6 +1104,7 @@ window.__eventLog = [];
 // Pricing in $ per 1M tokens — pulled from the existing modelPicker, with
 // opus-4.7 priced same as opus-4.6 until we have a real rate sheet.
 const MODEL_PRICING = {
+  "bankr/claude-opus-4.8":   { in: 5.00, out: 25.00, cacheRead: 0.50, cacheWrite: 6.25 },
   "bankr/claude-opus-4.7":   { in: 5.00, out: 25.00, cacheRead: 0.50, cacheWrite: 6.25 },
   "bankr/claude-opus-4.6":   { in: 5.00, out: 25.00, cacheRead: 0.50, cacheWrite: 6.25 },
   "bankr/claude-sonnet-4.6": { in: 3.00, out: 15.00, cacheRead: 0.30, cacheWrite: 3.75 },
@@ -1972,7 +2152,10 @@ function handleChatEvent(payload) {
     if (message) {
       const text = extractText(message.content);
       if (text) {
-        if (chatState === "delta") clawdVid.chatting(text);
+        // Don't switch to the chatting clip on text deltas — TTS hasn't
+        // started yet, so the pill still says "thinking" and a moving mouth
+        // is a lie. clawdVid.chatting() is fired correctly from
+        // audio.onplay when the first TTS chunk actually starts playing.
         t.lastText = text; t.textEl.innerHTML = renderText(text);
         if (tab === currentTab()) ttsFeed(text, chatState === "final");
         // Stats chip — update output estimate so the chip ticks during stream.
@@ -2016,10 +2199,19 @@ function handleChatEvent(payload) {
     setTimeout(fetchSessionStats, 1500);
     if (tab.turnCount === 3 || tab.turnCount === 9) autoTitleTab(tab).catch(() => {});
     const usedTools = t.toolCards && t.toolCards.size > 0;
-    clawdVid.chatting(t.lastText || "", {
-      firstEver: tab.turnCount === 1,
-      satisfied: usedTools,
-    });
+    // Only animate the talking clip if something was actually SPOKEN. Backchannel
+    // replies are often fully wrapped in [PRIVATE]…[/PRIVATE] and stripped from
+    // TTS — no audio plays, so a moving mouth is a lie (same reasoning as the
+    // delta guard above). If the sanitized/spoken text is empty, go idle.
+    const spokenAtFinal = _sanitizeForTts(t.lastText || "").trim();
+    if (spokenAtFinal) {
+      clawdVid.chatting(t.lastText || "", {
+        firstEver: tab.turnCount === 1,
+        satisfied: usedTools,
+      });
+    } else {
+      clawdVid.idle(true);
+    }
     // Sync thinking + tool blocks from server-side history. For non-Anthropic
     // models, deltas don't carry thinking content — it only appears in the
     // persisted message after the run completes.
@@ -2835,6 +3027,20 @@ function ttsPlayBlob(blob, kind) {
     const audio = new Audio(url);
     audio.__kind = kind;
     _ttsAudio = audio;
+    // Route this audio element through our analyser so the OUT meter reflects
+    // what's actually playing. createMediaElementSource diverts playback from
+    // the default device to our graph, so we must also connect to destination.
+    if (window.__clawdMeters && window.__clawdMeters.attachOutput) {
+      window.__clawdMeters.attachOutput(audio);
+    }
+    // Safari-only quirk handling: in Safari, createMediaElementSource
+    // doesn't fully divert the element's playback away from the system
+    // default output, causing a leak. Setting audio.muted = true silences
+    // that leak while data keeps flowing through the ctx graph (per spec).
+    //   In Chrome, audio.muted = true ALSO silences the ctx graph's data,
+    // killing TTS output entirely. So we only mute in Safari.
+    const isSafari = /^((?!chrome|android).)*safari/i.test(navigator.userAgent);
+    if (isSafari) audio.muted = true;
     console.log("%c[clawd] ttsPlayBlob ▶ start", "color:#34eeb6", "kind:", kind, "blob:", blob.size, "bytes", "url:", url.slice(-12));
     let done = false;
     const finish = (reason) => {
@@ -3102,8 +3308,27 @@ const _TTS_SENT_RE  = /^([\s\S]*?[.!?\n])\s/;
 // Hard cap so a long unbroken stream doesn't stall forever.
 const _TTS_MAX_CHUNK = 240;
 
+// clawd-backchannel convention: assistant content wrapped in
+// [PRIVATE]...[/PRIVATE] is meant for the side channel only and must NOT
+// be spoken. Streaming-aware: a half-arrived "[PRIV" tail truncates the
+// fullText so we wait for the rest before deciding whether to TTS it. The
+// sanitized text grows monotonically with the raw stream, so _ttsSpokenUpTo
+// (which indexes into whatever we feed the chunker) stays valid.
+const _TTS_PRIVATE_BLOCK_RE = /\[PRIVATE\][\s\S]*?\[\/PRIVATE\]/g;
+const _TTS_PARTIAL_OPEN_TAILS = ["[PRIVATE", "[PRIVAT", "[PRIVA", "[PRIV", "[PRI", "[PR", "[P", "["];
+function _sanitizeForTts(text) {
+  text = text.replace(_TTS_PRIVATE_BLOCK_RE, "");
+  const openIdx = text.indexOf("[PRIVATE]");
+  if (openIdx !== -1) return text.slice(0, openIdx);
+  for (const p of _TTS_PARTIAL_OPEN_TAILS) {
+    if (text.endsWith(p)) return text.slice(0, text.length - p.length);
+  }
+  return text;
+}
+
 function ttsFeed(fullText, isFinal) {
   if (!_ttsEnabled) return;
+  fullText = _sanitizeForTts(fullText);
   // Hold real text while we're waiting for the ack to land. We only stash
   // the latest cumulative {fullText, isFinal} — closeAckWindow replays it.
   if (_ackWindowOpen) {
@@ -3205,7 +3430,15 @@ const $btnMic = document.getElementById("btnMic");
 const $statusPill = document.getElementById("status-pill");
 const $statusLabel = $statusPill ? $statusPill.querySelector(".label") : null;
 
-const WAKE_RE = /\b(okay|ok)[\s,]+(claude|clawd|claud|cloud|clyde|clod|claud[oe])\b/i;
+// Two-word wake phrase: "okay claude" / "so claude" / "ok claude". The prefix is
+// REQUIRED — bare "claude" must NOT fire (guests on an AI podcast say it
+// constantly). We accept the common STT mis-hearings of the second word
+// (cloud/clawd/clyde/klaus/…). Matched against a rolling recent-speech window
+// (see WAKE_WINDOW_MS) so the two words still match when SR splits them into
+// separate chunks — that chunk-split, not the prefix, was the main miss.
+const WAKE_RE = /\b(?:so|okay|ok)[\s,]+(claude|clawd|claud|cloud|clyde|clod|clot|klaus|claus|clawed|clawde|claude?o|glaude)\b/i;
+const WAKE_STRIP_RE = new RegExp(WAKE_RE.source, "gi");  // strip every wake phrase from the captured command
+const WAKE_WINDOW_MS = 6000;        // join SR text from the last ~6s for wake matching + command capture (covers "talk first, then drop the wake word")
 const SILENCE_MS = 1500;            // how long to wait after wake before submitting
 const ECHO_TAIL_MS = 800;            // ignore SR for this long after TTS audio ends
 const RESTART_DELAY_MS = 250;        // backoff before restarting after onend
@@ -3225,6 +3458,11 @@ let _wakeManuallyPaused = false;  // user clicked the mic to take over
 // When the wake word fires we prepend this buffer to the prompt so clawd
 // can answer "what's the magic number?" by looking at what was said earlier.
 const _transcript = [];
+// High-water mark: timestamp of the last wake-word turn we submitted. Room
+// chatter older than this was already seen/answered, so we never re-feed it —
+// that's what made clawd answer a stale earlier question ("can you hear me?" →
+// answering the weather asked minutes ago).
+let _lastSubmitTs = 0;
 // What's currently being said but hasn't finalized yet. Updates many times
 // per second while you speak, then clears when the chunk finalizes. Only
 // used for live UI feedback; never sent to clawd.
@@ -3246,9 +3484,12 @@ function trimTranscript() {
 
 function buildTranscriptContext() {
   trimTranscript();
-  if (!_transcript.length) return "";
+  // Only utterances since clawd's last turn. Anything older was already seen
+  // and (likely) answered — re-feeding it makes clawd respond to stale questions.
+  const fresh = _transcript.filter(e => e.ts > _lastSubmitTs);
+  if (!fresh.length) return "";
   const now = Date.now();
-  const lines = _transcript.map(e => {
+  const lines = fresh.map(e => {
     const ago = Math.max(0, Math.round((now - e.ts) / 1000));
     return `[${ago}s ago] ${e.text}`;
   });
@@ -3286,6 +3527,7 @@ function startWakeRecog() {
   r.lang = "en-US";
 
   r.onstart = () => {
+    console.log("%c[SR] start", "color:#6cf");
     // Only repaint pill/avatar if nothing else is going on. The recognizer
     // restarts every ~30s under Chrome — we mustn't yank the avatar out of
     // chatting/thinking mid-turn.
@@ -3293,10 +3535,29 @@ function startWakeRecog() {
     if (_ttsAudio) return;
     const tab = (typeof currentTab === "function") ? currentTab() : null;
     if (tab && tab.activeRunId) return;
-    setPillState("listening", 'listening for "okay claude"');
+    setPillState("listening", 'listening for "okay/so claude"');
+  };
+  r.onaudiostart  = () => console.log("%c[SR] audiostart  — capture began", "color:#6cf");
+  r.onsoundstart  = () => console.log("%c[SR] soundstart  — any sound detected", "color:#6cf");
+  r.onspeechstart = () => console.log("%c[SR] speechstart — speech classified", "color:#6cf");
+  r.onspeechend   = () => console.log("%c[SR] speechend", "color:#888");
+  r.onsoundend    = () => console.log("%c[SR] soundend", "color:#888");
+  r.onnomatch     = () => console.log("%c[SR] nomatch — heard but didn't transcribe", "color:#fc6");
+
+  // SR-activity meter: each onresult bumps the SR bar to 100% and re-arms
+  // a 400ms decay timer. In continuous mode speechstart/speechend fire only
+  // at session boundaries, so onresult is the most reliable activity signal.
+  let _spchDecayTimer = null;
+  const pingSpeechMeter = () => {
+    const m = window.__clawdMeters;
+    if (!m || !m.setSpeechLevel) return;
+    m.setSpeechLevel(100);
+    clearTimeout(_spchDecayTimer);
+    _spchDecayTimer = setTimeout(() => m.setSpeechLevel(0), 400);
   };
 
   r.onresult = (e) => {
+    pingSpeechMeter();
     if (inEchoWindow()) return;
     let interim = "";
     for (let i = e.resultIndex; i < e.results.length; i++) {
@@ -3305,7 +3566,33 @@ function startWakeRecog() {
       else interim += res[0].transcript;
     }
     _liveInterim = interim.trim();
+    // Wake detection over a COMBINED recent window (recent finalized chunks +
+    // the live interim). This is the fix for the real miss cause: SR often
+    // splits "so" / "okay" and "claude" into separate chunks, so per-chunk
+    // matching never saw the two-word phrase. The window stitches them back.
+    if (!_wakeArmed) {
+      const now = Date.now();
+      const floor = Math.max(_lastSubmitTs, now - WAKE_WINDOW_MS);
+      const recent = _transcript.filter(e => e.ts > floor).map(e => e.text).join(" ");
+      const windowText = (recent + " " + _liveInterim).replace(/\s+/g, " ").trim();
+      if (windowText && WAKE_RE.test(windowText)) {
+        _wakeArmed = true;
+        // The command can PRECEDE the wake word ("…what's the weather, so claude"),
+        // so seed the buffer with the finals captured so far; more append below.
+        _wakeBuf = recent;
+        setPillState("armed", "yes?");
+        clawdVid.listening();
+        armSilenceTimer();
+      }
+    }
     renderTranscriptOverlay();
+  };
+
+  r.onaudioend = () => {
+    console.log("%c[SR] audioend — capture ended", "color:#888");
+    clearTimeout(_spchDecayTimer);
+    const m = window.__clawdMeters;
+    if (m && m.setSpeechLevel) m.setSpeechLevel(0);
   };
 
   r.onerror = (e) => {
@@ -3346,50 +3633,74 @@ function armSilenceTimer() {
 }
 
 function submitWakeBuffer() {
-  const prompt = _wakeBuf.trim();
+  // The buffer may contain the wake phrase (it can land mid/end of the
+  // utterance, or get re-spoken). Strip every wake phrase now that the full
+  // utterance is assembled, leaving just the command for clawd.
+  const prompt = (_wakeBuf || "").replace(WAKE_STRIP_RE, " ").replace(/\s+/g, " ").trim();
   _wakeArmed = false;
   _wakeBuf = "";
   clearTimeout(_silenceTimer);
   if (!prompt) {
-    setPillState("listening", 'listening for "okay claude"');
+    setPillState("listening", 'listening for "okay/so claude"');
     return;
   }
   // Build the message we send to clawd: rolling room transcript on top,
   // then the explicit question the wake-word phrase introduced. Clawd
   // sees the conversational context and can back-reference earlier
   // utterances ("what was the magic number?").
-  const ctx = buildTranscriptContext();
-  const composed = ctx
-    ? `${ctx}\n[just now, addressed to you]: ${prompt}`
-    : prompt;
+  _lastSubmitTs = Date.now();  // keep the overlay window advancing
+  // Send ONLY the current utterance — nothing else. The rolling transcript +
+  // layered "respond only / don't recap" guards turned every turn into a wall
+  // of meta-instructions, and the model answered the whole blob (greeting +
+  // re-answering earlier questions) instead of the actual question. clawd's
+  // own session history IS the conversation; a clean one-line question gets a
+  // clean, on-topic answer. (Ambient room transcript intentionally dropped —
+  // reliability over back-reference; can be re-added carefully if needed.)
+  const composed = prompt;
   $input.value = composed;
   autosize($input);
   setPillState("thinking", "thinking…");
   onSend();
 }
 
+// ── Paste-to-clawd text input ────────────────────────────────────────────
+// Lets the operator hand clawd a link, skill path, or any text prompt by
+// keyboard instead of voice. Submits via the same onSend() the wake-word
+// path uses, so the message lands in the normal chat flow.
+(function wirePasteBox() {
+  const $pasteInput = document.getElementById("paste-input");
+  const $pasteSend  = document.getElementById("paste-send");
+  if (!$pasteInput || !$pasteSend) return;
+  function submit() {
+    const text = ($pasteInput.value || "").trim();
+    if (!text) return;
+    $input.value = text;
+    autosize($input);
+    setPillState("thinking", "thinking…");
+    onSend();
+    $pasteInput.value = "";
+    autosize($pasteInput);
+    $pasteInput.blur();
+  }
+  $pasteSend.addEventListener("click", submit);
+  $pasteInput.addEventListener("keydown", (e) => {
+    if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); submit(); }
+  });
+  $pasteInput.addEventListener("input", () => autosize($pasteInput));
+})();
+
 function handleFinalChunk(rawText) {
   const text = (rawText || "").trim();
   if (!text) return;
-  // Always capture into the rolling transcript so clawd has context for
-  // back-references like "what's the magic number?". Inserted regardless
-  // of whether this chunk contains the wake word.
+  // Every finalized chunk feeds the rolling transcript that the wake detector's
+  // recent-window match reads (see onresult). Arming itself happens there,
+  // against the combined window; here we only grow the command once armed.
   pushTranscript(text);
-  if (!_wakeArmed) {
-    const m = text.match(WAKE_RE);
-    if (!m) return;
-    const after = text.slice(m.index + m[0].length).trim();
-    _wakeArmed = true;
-    _wakeBuf = after;
-    setPillState("armed", after ? "heard you — go on…" : "yes?");
-    clawdVid.listening();
+  if (_wakeArmed) {
+    _wakeBuf = (_wakeBuf ? _wakeBuf + " " : "") + text;
+    setPillState("armed", "go on…");
     armSilenceTimer();
-    return;
   }
-  // Already armed — append to buffer and reset silence timer.
-  _wakeBuf = (_wakeBuf ? _wakeBuf + " " : "") + text;
-  setPillState("armed", "go on…");
-  armSilenceTimer();
 }
 
 // ── Pill state poller ─────────────────────────────────────────────────────
@@ -3413,7 +3724,7 @@ setInterval(() => {
   } else if (running) {
     setPillState("thinking", "thinking…");
   } else {
-    setPillState("listening", 'listening for "okay claude"');
+    setPillState("listening", 'listening for "okay/so claude"');
   }
 }, 200);
 
@@ -3570,7 +3881,7 @@ if ($btnMic) {
       _wakeManuallyPaused = false;
       $btnMic.classList.remove("recording");
       startWakeRecog();
-      setPillState("listening", 'listening for "okay claude"');
+      setPillState("listening", 'listening for "okay/so claude"');
     } else {
       _wakeManuallyPaused = true;
       $btnMic.classList.add("recording");
@@ -3702,6 +4013,7 @@ setTimeout(() => fetchSessionStats({ countCost: false }), 1500);
   const params = new URLSearchParams(location.search);
   if (params.has("dev")) document.body.classList.remove("obs");
   if (params.has("nostatus")) document.body.classList.add("hide-status");
+  if (params.has("leaktests")) document.body.classList.add("show-leaktests");
   // Show the rolling room transcript overlay (top-right). Defaults on in
   // dev mode; toggle with ?transcript=1 / ?transcript=0 to override.
   const wantTranscript = params.has("transcript")
@@ -3714,6 +4026,202 @@ setTimeout(() => fetchSessionStats({ countCost: false }), 1500);
     _ttsEnabled = true;
     localStorage.setItem("clawd.tts", "1");
     applyTtsState();
+  }
+
+  // ── Audio meters ─────────────────────────────────────────────────────────
+  // Shared AudioContext + analysers so the OBS overlay can show live mic
+  // input level and TTS output level. Must be created inside the user
+  // gesture (the audio-unlock click) so Chrome doesn't suspend the context.
+  const meters = {
+    ctx: null,
+    micAnalyser: null,
+    spkAnalyser: null,
+    attachOutput(audio) {
+      if (!this.ctx || !this.spkAnalyser) return;
+      try {
+        const src = this.ctx.createMediaElementSource(audio);
+        src.connect(this.spkAnalyser);
+      } catch (e) {
+        console.warn("[meters] attachOutput failed:", e.message);
+      }
+    },
+  };
+  window.__clawdMeters = meters;
+
+  async function setupAudioMeters() {
+    const $micRow = document.querySelector("#audio-meters .meter.mic");
+    const $spchRow = document.querySelector("#audio-meters .meter.speech");
+    const $spkRow = document.querySelector("#audio-meters .meter.spk");
+    const $mic = $micRow && $micRow.querySelector(".bar-fill");
+    const $spch = $spchRow && $spchRow.querySelector(".bar-fill");
+    const $spk = $spkRow && $spkRow.querySelector(".bar-fill");
+    if (!$mic || !$spk) return;
+    // Setter for SR-driven speech bar; called from r.onresult.
+    meters.setSpeechLevel = (pct) => {
+      if (!$spch) return;
+      $spch.style.width = pct.toFixed(1) + "%";
+      $spchRow.classList.toggle("idle", pct < 1);
+    };
+    try {
+      // TWO separate AudioContexts — required for Safari. Safari binds the
+      // entire context to whatever device setSinkId sets, including any
+      // MediaStreamSource attached to it. Result: a mic stream wired into
+      // the same ctx whose destination is BH-2ch gets silently redirected
+      // to BH-2ch's input too, regardless of the deviceId we asked for in
+      // getUserMedia. Keeping input and output in different contexts
+      // prevents the output's sinkId from clobbering the input device.
+      meters.ctxIn = new (window.AudioContext || window.webkitAudioContext)();
+      if (meters.ctxIn.state === "suspended") await meters.ctxIn.resume();
+      meters.ctx   = new (window.AudioContext || window.webkitAudioContext)();
+      if (meters.ctx.state === "suspended") await meters.ctx.resume();
+    } catch (e) {
+      console.warn("[meters] AudioContext unavailable:", e.message);
+      return;
+    }
+    // Output side: analyser → destination, lives in meters.ctx. Each TTS
+    // Audio element is wired in via meters.attachOutput(). meters.ctx is
+    // the one we call setSinkId(BH-2ch) on (see setupBlackHoleBridge).
+    meters.spkAnalyser = meters.ctx.createAnalyser();
+    meters.spkAnalyser.fftSize = 1024;
+    meters.spkAnalyser.smoothingTimeConstant = 0.6;
+    meters.spkAnalyser.connect(meters.ctx.destination);
+    // Mic side: prime perms with a generic request so Safari/Chrome
+    // populate device labels in enumerateDevices, then re-grab the stream
+    // pinned to BlackHole 16ch by deviceId if it exists. Safari doesn't
+    // honor system-default for getUserMedia the way Chrome does, so the
+    // explicit deviceId pin is the only reliable way to ensure we capture
+    // from the BlackHole bridge.
+    meters.activeMicLabel = "(none)";
+    try {
+      // Enumerate first so we know what BH-2ch and BH-16ch actually are.
+      const probe = await navigator.mediaDevices.getUserMedia({ audio: true });
+      probe.getTracks().forEach(t => t.stop());
+      const devs = await navigator.mediaDevices.enumerateDevices();
+      const inputs = devs.filter(d => d.kind === "audioinput");
+      const bh16In = inputs.find(d => /blackhole\s*16ch/i.test(d.label));
+      const bh2In  = inputs.find(d => /blackhole\s*2ch/i.test(d.label));
+      meters.bh16InId = bh16In ? bh16In.deviceId : null;
+      meters.bh2InId  = bh2In  ? bh2In.deviceId  : null;
+      console.log("%c[clawd] input deviceIds:", "color:#34eeb6",
+        "BH-16ch:", (meters.bh16InId || "").slice(0, 16) + "…",
+        "BH-2ch:",  (meters.bh2InId  || "").slice(0, 16) + "…");
+
+      // Open with default + AEC/AGC off. Don't pin deviceId — Safari has
+      // been silently redirecting that to BH-2ch regardless.
+      const stream = await navigator.mediaDevices.getUserMedia({
+        audio: { echoCancellation: false, autoGainControl: false, noiseSuppression: false }
+      });
+      const track = stream.getAudioTracks()[0];
+      const settings = (track && track.getSettings) ? track.getSettings() : {};
+      meters.activeMicLabel = (track && track.label) || "default";
+      meters.activeMicDeviceId = settings.deviceId || "";
+      console.log("%c[clawd] mic stream open on:", "color:#34eeb6",
+        "label:", meters.activeMicLabel,
+        "got deviceId:", meters.activeMicDeviceId.slice(0, 16) + "…",
+        "matches BH-16ch?", meters.activeMicDeviceId === meters.bh16InId,
+        "matches BH-2ch?",  meters.activeMicDeviceId === meters.bh2InId,
+        "channels:", settings.channelCount);
+      // Mic stream goes through ctxIn (no setSinkId), keeping its physical
+      // device binding intact regardless of what the OUTPUT ctx is routed to.
+      const src = meters.ctxIn.createMediaStreamSource(stream);
+      meters.micAnalyser = meters.ctxIn.createAnalyser();
+      meters.micAnalyser.fftSize = 1024;
+      meters.micAnalyser.smoothingTimeConstant = 0.6;
+      src.connect(meters.micAnalyser);
+    } catch (e) {
+      console.warn("[meters] mic capture failed:", e.name, e.message);
+      meters.activeMicLabel = `failed: ${e.name}`;
+    }
+    const micBuf = meters.micAnalyser ? new Uint8Array(meters.micAnalyser.fftSize) : null;
+    const spkBuf = new Uint8Array(meters.spkAnalyser.fftSize);
+    const rms = (buf) => {
+      let sum = 0;
+      for (let i = 0; i < buf.length; i++) {
+        const v = (buf[i] - 128) / 128;
+        sum += v * v;
+      }
+      return Math.sqrt(sum / buf.length);
+    };
+    function tick() {
+      if (meters.micAnalyser) {
+        meters.micAnalyser.getByteTimeDomainData(micBuf);
+        const pct = Math.min(100, rms(micBuf) * 240);
+        $mic.style.width = pct.toFixed(1) + "%";
+        $micRow.classList.toggle("idle", pct < 1);
+      }
+      meters.spkAnalyser.getByteTimeDomainData(spkBuf);
+      const spct = Math.min(100, rms(spkBuf) * 240);
+      $spk.style.width = spct.toFixed(1) + "%";
+      $spkRow.classList.toggle("idle", spct < 1);
+      requestAnimationFrame(tick);
+    }
+    tick();
+    console.log("%c[clawd] audio meters online", "color:#34eeb6", "mic:", !!meters.micAnalyser, "spk: true");
+    // BlackHole bridge: if BlackHole 2ch exists as an output device, route
+    // the AudioContext destination to it so TTS lands in BlackHole 2ch
+    // (which slop.computer reads as its mic). Without this, TTS goes to
+    // the system default — likely BlackHole 16ch in this setup — and we'd
+    // feedback into clawd's own mic.
+    await setupBlackHoleBridge();
+  }
+
+  async function setupBlackHoleBridge() {
+    const $routing = document.querySelector("#audio-meters .routing");
+    const setRouting = (html) => { if ($routing) $routing.innerHTML = html; };
+    try {
+      const devices = await navigator.mediaDevices.enumerateDevices();
+      const bh2Out = devices.find(d => d.kind === "audiooutput" && /blackhole\s*2ch/i.test(d.label));
+      const bh16In = devices.find(d => d.kind === "audioinput"  && /blackhole\s*16ch/i.test(d.label));
+      const defaultIn = devices.find(d => d.kind === "audioinput" && d.deviceId === "default");
+
+      // Output: route ctx → BlackHole 2ch if present.
+      let outLabel = "default (no BlackHole 2ch found)";
+      let outOk = false;
+      if (bh2Out && meters.ctx) {
+        try {
+          if (typeof meters.ctx.setSinkId === "function") {
+            await meters.ctx.setSinkId(bh2Out.deviceId);
+            outLabel = "BlackHole 2ch"; outOk = true;
+          } else {
+            // Older Chrome — rebuild ctx with sinkId option, reconnect analyser.
+            try { meters.spkAnalyser.disconnect(); } catch {}
+            meters.ctx = new (window.AudioContext || window.webkitAudioContext)({ sinkId: bh2Out.deviceId });
+            if (meters.ctx.state === "suspended") await meters.ctx.resume();
+            meters.spkAnalyser = meters.ctx.createAnalyser();
+            meters.spkAnalyser.fftSize = 1024;
+            meters.spkAnalyser.smoothingTimeConstant = 0.6;
+            meters.spkAnalyser.connect(meters.ctx.destination);
+            outLabel = "BlackHole 2ch (ctx rebuilt)"; outOk = true;
+          }
+        } catch (e) {
+          outLabel = `setSinkId failed: ${e.message}`;
+        }
+      }
+      // Input: report the ACTIVE track label from the mic stream we
+      // captured (set in setupAudioMeters above). This tells us what the
+      // browser actually opened, not just what the system default claims.
+      // For SR specifically: Chrome's SR uses system default mic and we
+      // can't override it via JS — if mic track label says BlackHole 16ch
+      // but SR still fails, that's the SR-on-virtual-device problem.
+      let inLabel = meters.activeMicLabel || "(unknown)";
+      const inOk = /blackhole\s*16ch/i.test(inLabel);
+      if (!inOk && bh16In) inLabel += `  (avail: BlackHole 16ch)`;
+
+      const oCls = outOk ? "ok" : "warn";
+      const iCls = inOk ? "ok" : "warn";
+      setRouting(
+        `<div>OUT → <span class="${oCls}">${escapeHtml(outLabel)}</span></div>` +
+        `<div>IN  ← <span class="${iCls}">${escapeHtml(inLabel)}</span></div>`
+      );
+      console.log("%c[clawd] BlackHole bridge", "color:#34eeb6", { outLabel, outOk, inLabel, inOk });
+    } catch (e) {
+      setRouting(`<span class="warn">routing setup failed: ${escapeHtml(e.message)}</span>`);
+      console.warn("[clawd] BlackHole bridge failed:", e);
+    }
+  }
+
+  function escapeHtml(s) {
+    return String(s).replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"}[c]));
   }
 
   const $unlock = document.getElementById("audio-unlock");
@@ -3737,7 +4245,96 @@ setTimeout(() => fetchSessionStats({ countCost: false }), 1500);
       setTimeout(() => { try { $unlock.remove(); } catch {} }, 500);
     }
     startWakeRecog();
+    setupAudioMeters().then(setupToneTests);
     console.log("%c[clawd] audio unlocked, wake-word recognizer started", "color:#34eeb6");
+  }
+
+  // ── Tone test buttons ────────────────────────────────────────────────────
+  // Three buttons that play test tones through different paths so we can
+  // see exactly which paths leak from BH-2ch back into BH-16ch (the MIC bar).
+  async function setupToneTests() {
+    if (!meters.ctx) return;
+    const $buf  = document.getElementById("tone-buf");
+    const $tts  = document.getElementById("tone-tts");
+    const $dflt = document.getElementById("tone-dflt");
+    if (!$buf || !$tts || !$dflt) return;
+
+    // Pre-render a tone into an AudioBuffer (for ctx-based playback) and a
+    // WAV blob (for HTMLAudioElement playback).
+    async function makeBufferAndBlob(freq, dur = 0.7) {
+      const sr = meters.ctx.sampleRate;
+      const off = new OfflineAudioContext(1, Math.floor(sr * dur), sr);
+      const osc = off.createOscillator();
+      const g = off.createGain();
+      osc.frequency.value = freq;
+      g.gain.setValueAtTime(0, 0);
+      g.gain.linearRampToValueAtTime(0.2, 0.02);
+      g.gain.setValueAtTime(0.2, dur - 0.05);
+      g.gain.linearRampToValueAtTime(0, dur);
+      osc.connect(g).connect(off.destination);
+      osc.start(); osc.stop(dur);
+      const audioBuffer = await off.startRendering();
+
+      // Encode the same AudioBuffer as a 16-bit PCM WAV blob.
+      const samples = audioBuffer.length;
+      const ab = new ArrayBuffer(44 + samples * 2);
+      const dv = new DataView(ab);
+      let p = 0;
+      const wstr = s => { for (const c of s) dv.setUint8(p++, c.charCodeAt(0)); };
+      const wu32 = v => { dv.setUint32(p, v, true); p += 4; };
+      const wu16 = v => { dv.setUint16(p, v, true); p += 2; };
+      wstr("RIFF"); wu32(36 + samples * 2); wstr("WAVE");
+      wstr("fmt "); wu32(16); wu16(1); wu16(1); wu32(sr);
+      wu32(sr * 2); wu16(2); wu16(16);
+      wstr("data"); wu32(samples * 2);
+      const ch = audioBuffer.getChannelData(0);
+      for (let i = 0; i < samples; i++) {
+        const s = Math.max(-1, Math.min(1, ch[i]));
+        dv.setInt16(p, s * 0x7fff, true); p += 2;
+      }
+      return { audioBuffer, blob: new Blob([ab], { type: "audio/wav" }) };
+    }
+
+    // Test 1: BufferSource through clawd's ctx (which has setSinkId = BH-2ch).
+    //   No HTMLAudioElement at all. If MIC spikes, setSinkId is not exclusive.
+    $buf.disabled = false;
+    $buf.addEventListener("click", async () => {
+      const { audioBuffer } = await makeBufferAndBlob(440);
+      const src = meters.ctx.createBufferSource();
+      src.buffer = audioBuffer;
+      src.connect(meters.ctx.destination);
+      src.start();
+      console.log("%c[tone] BufferSource → ctx.destination (sinkId=BH-2ch)", "color:#6cf");
+    });
+
+    // Test 2: Same path as the TTS pipeline — Audio element + createMediaElementSource
+    //   + audio.muted = true. This is EXACTLY what ttsPlayBlob does. If this
+    //   spikes MIC, the muted fix isn't working in this browser.
+    $tts.disabled = false;
+    $tts.addEventListener("click", async () => {
+      const { blob } = await makeBufferAndBlob(554);
+      const url = URL.createObjectURL(blob);
+      const audio = new Audio(url);
+      meters.attachOutput(audio);  // createMediaElementSource → spkAnalyser → ctx.destination
+      audio.muted = true;
+      audio.onended = () => { URL.revokeObjectURL(url); console.log("%c[tone] TTS path done", "color:#cc2b2b"); };
+      audio.play().catch(e => console.warn("[tone] tts play failed:", e.message));
+      console.log("%c[tone] Audio + MediaElementSource + muted=true → ctx.destination (sinkId=BH-2ch)", "color:#6cf");
+    });
+
+    // Test 3: Plain Audio.play() with NO routing — goes to system default.
+    //   System default = BH-16ch in this setup, so MIC SHOULD spike. Control.
+    $dflt.disabled = false;
+    $dflt.addEventListener("click", async () => {
+      const { blob } = await makeBufferAndBlob(660);
+      const url = URL.createObjectURL(blob);
+      const audio = new Audio(url);
+      audio.onended = () => { URL.revokeObjectURL(url); console.log("%c[tone] default-route done", "color:#cc2b2b"); };
+      audio.play().catch(e => console.warn("[tone] default play failed:", e.message));
+      console.log("%c[tone] plain Audio → system DEFAULT output (= BH-16ch)", "color:#6cf");
+    });
+
+    console.log("%c[clawd] tone test buttons enabled", "color:#34eeb6");
   }
 
   if ($unlock) {
