@@ -1423,6 +1423,10 @@ async function fetchSessionStats({ countCost = true } = {}) {
 }
 
 const DEFAULT_MODEL = "bankr/claude-sonnet-4.6";
+// One-time migration: the "opus" quick-button used to be 4.7. Bump anyone whose
+// cached model is the retired 4.7 up to 4.8 so they get the latest without
+// re-clicking (and the session stops re-asserting 4.7 on the next turn).
+try { if (localStorage.getItem("clawd.model") === "bankr/claude-opus-4.7") localStorage.setItem("clawd.model", "bankr/claude-opus-4.8"); } catch (e) {}
 
 const state = {
   ws: null,
@@ -2783,10 +2787,20 @@ async function ensureModelSelected(tab) {
   tab.lastSentModel = model;
 }
 
-async function onSend() {
+async function onSend(opts = {}) {
   const tab = currentTab();
   if (!tab) return;
-  if (tab.activeRunId) return onStop();
+  if (tab.activeRunId) {
+    // Send BUTTON while a run is active = stop (typed UI). But a VOICE turn
+    // (opts.interrupt) means the user is talking over clawd — interrupt the
+    // in-flight answer and ask the NEW thing, instead of the old behavior of
+    // aborting the run and DROPPING the new question (which left turns
+    // unanswered and misaligned the whole conversation on a live call).
+    if (!opts.interrupt) return onStop();
+    try { await rpc("chat.abort", { sessionKey: tab.sessionKey, runId: tab.activeRunId }); } catch (e) {}
+    tab.activeRunId = null;
+    ttsReset();   // stop speaking the previous, now-interrupted answer
+  }
   const text = $input.value.trim();
   if (!text) return;
   if (!state.connected) { renderError("Not connected", tab); return; }
@@ -3660,7 +3674,7 @@ function submitWakeBuffer() {
   $input.value = composed;
   autosize($input);
   setPillState("thinking", "thinking…");
-  onSend();
+  onSend({ interrupt: true });   // voice turn: interrupt any in-flight answer, don't drop this question
 }
 
 // ── Paste-to-clawd text input ────────────────────────────────────────────
