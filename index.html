@@ -630,6 +630,32 @@
     font-variant-numeric: tabular-nums;
   }
 
+  /* ── Speech caption — the line clawd is CURRENTLY saying, over the avatar.
+     Mirrors clawd-web-chat's on-screen subtitle: every TTS blob (real answer
+     + ack/tool/thinking filler) sets it as that blob starts playing, so the
+     OBS/Zoom feed shows the words — and the filler — as they're spoken. Empty
+     string → fully transparent. Only rendered in OBS mode (dev mode already
+     shows the streaming text in the chat panel). */
+  #speechCaption {
+    display: none;
+    position: fixed; left: 0; right: 0; bottom: 64px;
+    margin: 0 auto; max-width: 92vw;
+    text-align: center;
+    font-family: var(--font-sans);
+    font-size: clamp(22px, 3.4vh, 40px);
+    font-weight: 800; letter-spacing: 0.01em; line-height: 1.25;
+    color: #fff;
+    -webkit-text-stroke: 2px #000; paint-order: stroke fill;
+    text-shadow: 0 0 2px #000, 0 0 6px rgba(0,0,0,0.95), 0 4px 18px rgba(0,0,0,0.9);
+    padding: 0 4%;
+    max-height: 30vh; overflow: hidden;
+    z-index: 10001; pointer-events: none;
+    transition: opacity 0.18s ease;
+  }
+  body.obs #speechCaption { display: block; }
+  #speechCaption:empty { opacity: 0; }
+  body.obs.hide-status #speechCaption { opacity: 0; }
+
   /* ── Click-to-start overlay (autoplay gate) ──────────────────────────── */
   #audio-unlock {
     position: fixed; inset: 0;
@@ -732,6 +758,11 @@
   </div>
   <div class="transcript-rows"></div>
 </div>
+
+<!-- Speech caption — the line clawd is currently speaking (real answer, or an
+     ack / tool / thinking filler). Mirrors clawd-web-chat's subtitle so the
+     OBS/Zoom feed shows the words as they're spoken. Empty = invisible. -->
+<div id="speechCaption"></div>
 
 <!-- Click-to-start overlay. Chrome's autoplay policy blocks audio.play()
      until the user clicks on the page once — required even with mic perms.
@@ -2981,11 +3012,23 @@ function ttsStrip(text) {
     .trim();
 }
 
+// On-screen caption of what clawd is currently saying. Every TTS blob (real
+// answer + ack/tool/thinking filler) sets this as it starts playing, so the
+// spoken line — including the silence-filling stall talk — shows on the OBS
+// feed. Cleared when the queue fully drains or on reset. Mirrors web-chat's
+// setSubtitle().
+const $speechCaption = document.getElementById("speechCaption");
+function setCaption(text) {
+  if (!$speechCaption) return;
+  $speechCaption.textContent = text || "";
+}
+
 function ttsReset() {
   console.log("%c[clawd] ttsReset()", "color:#e55a2b;font-weight:bold", "had audio:", !!_ttsAudio, "queue:", _ttsQueue.length, "from:", new Error().stack.split("\n").slice(1, 4).map(s => s.trim()).join(" | "));
   _ttsSpokenUpTo = 0;
   _ttsChunkIndex = 0;
   _ttsTurnFullText = "";
+  setCaption("");           // wipe any lingering spoken line
   _ttsTurnId++;             // invalidate every in-flight chunk
   _ttsQueue = [];
   _ttsRealArrived = false;
@@ -3035,7 +3078,7 @@ async function ttsFetchChunk(text, turnId) {
   }
 }
 
-function ttsPlayBlob(blob, kind) {
+function ttsPlayBlob(blob, kind, captionText) {
   return new Promise(resolve => {
     const url = URL.createObjectURL(blob);
     const audio = new Audio(url);
@@ -3071,6 +3114,7 @@ function ttsPlayBlob(blob, kind) {
       console.log("%c[clawd] audio.onplay", "color:#34eeb6", "kind:", kind, "url:", url.slice(-12));
       clearTimeout(_ttsIdleTimer);
       clawdVid.chatting(_ttsTurnFullText);
+      setCaption(captionText);   // show this spoken line on the OBS feed
       if (kind === "real") _ttsRealAudioStarted = true;
       if (kind === "ack") ackTrace("audio.onplay fired — ack is speaking");
     };
@@ -3108,13 +3152,14 @@ async function ttsDrainQueue() {
       if ((item.kind === "tool" || item.kind === "thinking") && _ttsRealArrived) continue;
       if (item.kind === "ack" && _ttsRealAudioStarted) { ackTrace("drain DROP ack post-await: realAudioStarted"); continue; }
       if (item.kind === "ack") ackTrace("drain calling ttsPlayBlob for ack");
-      await ttsPlayBlob(blob, item.kind);
+      await ttsPlayBlob(blob, item.kind, item.text);
       if (item.kind === "ack") ackTrace("drain ack playback done");
     }
   } finally {
     _ttsDraining = false;
   }
   if (!_ttsAudio && !_ttsQueue.length) {
+    setCaption("");   // nothing left to speak — clear the caption
     _ttsIdleTimer = setTimeout(() => clawdVid.idle(true), 250);
   }
 }
@@ -3142,7 +3187,7 @@ function ttsEnqueue(text, kind = "real") {
     blobPromise.then(b => ackTrace("ack TTS blob arrived", b ? `${b.size} bytes` : "null/aborted"))
                .catch(e => ackTrace("ack TTS blob fetch failed", e.message));
   }
-  const item = { turnId, blobPromise, kind };
+  const item = { turnId, blobPromise, kind, text: stripped };
   // Ack jumps to the front so the user hears it before queued real chunks.
   // (If real audio is already mid-playback, the ack still has to wait for
   // the current chunk to end — that's intentional, no overlap.)
@@ -3453,7 +3498,7 @@ const $statusLabel = $statusPill ? $statusPill.querySelector(".label") : null;
 const WAKE_RE = /\b(?:so|okay|ok)[\s,]+(claude|clawd|claud|cloud|clyde|clod|clot|klaus|claus|clawed|clawde|claude?o|glaude)\b/i;
 const WAKE_STRIP_RE = new RegExp(WAKE_RE.source, "gi");  // strip every wake phrase from the captured command
 const WAKE_WINDOW_MS = 6000;        // join SR text from the last ~6s for wake matching + command capture (covers "talk first, then drop the wake word")
-const SILENCE_MS = 1500;            // how long to wait after wake before submitting
+const SILENCE_MS = 2500;            // how long of TRUE silence after wake before submitting (raised from 1500 — was cutting people off mid-sentence on natural pauses)
 const ECHO_TAIL_MS = 800;            // ignore SR for this long after TTS audio ends
 const RESTART_DELAY_MS = 250;        // backoff before restarting after onend
 const TRANSCRIPT_MAX_AGE_MS = 5 * 60 * 1000;   // 5 minutes of room context
@@ -3598,6 +3643,14 @@ function startWakeRecog() {
         clawdVid.listening();
         armSilenceTimer();
       }
+    } else if (_liveInterim) {
+      // Already armed and still hearing LIVE (un-finalized) speech: keep the
+      // floor open by resetting the silence countdown on every interim update.
+      // Previously only FINALIZED chunks re-armed the timer, so Web Speech's
+      // slow finalization let a natural mid-sentence pause submit while the
+      // user was plainly still talking. This is the main false-interrupt fix;
+      // SILENCE_MS now only governs the trailing gap after you actually stop.
+      armSilenceTimer();
     }
     renderTranscriptOverlay();
   };
