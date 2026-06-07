@@ -1,4 +1,10 @@
 .env
+.env.*
+*.env
+*.bak
+*.bak.*
+*.backup
+secrets*
 .DS_Store
 __pycache__/
 *.pyc

@@ -2192,7 +2192,7 @@ function handleChatEvent(payload) {
         // is a lie. clawdVid.chatting() is fired correctly from
         // audio.onplay when the first TTS chunk actually starts playing.
         t.lastText = text; t.textEl.innerHTML = renderText(text);
-        if (tab === currentTab()) ttsFeed(text, chatState === "final");
+        if (tab === currentTab()) ttsFeed(text, chatState === "final", runId);
         // Stats chip — update output estimate so the chip ticks during stream.
         recordOutputEstimate(text, chatState === "final");
       }
@@ -2869,6 +2869,20 @@ async function onSend(opts = {}) {
   autosize($input);
 
   try {
+    // ── Stateless call turns (voice) ──────────────────────────────────────
+    // A voice/call turn must answer ONLY what was just said. The shared
+    // session (agent:clawd:main) otherwise accumulates every prior turn AND
+    // every ambient call utterance, so the model re-fires stale standing
+    // imperatives ("ask Binji X…") instead of the current message — it gets
+    // stuck re-answering old stuff. Reset the server transcript right before
+    // sending so the model sees THIS message and nothing else. Typed/paste
+    // sends (no opts.interrupt) keep their context.
+    if (opts.interrupt) {
+      try {
+        await rpc("sessions.reset", { key: tab.sessionKey, reason: "stateless-call-turn" });
+        tab.lastSentModel = null;   // reset drops the server's model pin → it reverts to the sonnet DEFAULT. Force ensureModelSelected to re-send /model so the picker's choice (e.g. opus 4.8) actually applies to the fresh session.
+      } catch (e) { if (window.__clawdDebug) console.warn("[stateless] reset failed:", e.message); }
+    }
     await ensureModelSelected(tab);
     const res = await rpc("chat.send", {
       sessionKey: tab.sessionKey,
@@ -2966,6 +2980,7 @@ document.addEventListener("keydown", (e) => {
 const $btnSpeak = document.getElementById("btnSpeak");
 let _ttsEnabled = localStorage.getItem("clawd.tts") === "1";
 let _ttsSpokenUpTo = 0;     // char count of fullText already enqueued/spoken
+let _ttsFeedRunId = null;   // runId TTS is currently chunking; offset resets when it changes (fixes backchannel turns inheriting a stale offset → clipped/mid-word speech)
 let _ttsTurnFullText = "";  // latest fullText for picking chat variant
 let _ttsIdleTimer = null;
 let _ttsMode = "browser";   // "elevenlabs" | "openai" | "browser"
@@ -3027,6 +3042,7 @@ function ttsReset() {
   console.log("%c[clawd] ttsReset()", "color:#e55a2b;font-weight:bold", "had audio:", !!_ttsAudio, "queue:", _ttsQueue.length, "from:", new Error().stack.split("\n").slice(1, 4).map(s => s.trim()).join(" | "));
   _ttsSpokenUpTo = 0;
   _ttsChunkIndex = 0;
+  _ttsFeedRunId = null;     // next run's first delta re-detects and resets the slice offset
   _ttsTurnFullText = "";
   setCaption("");           // wipe any lingering spoken line
   _ttsTurnId++;             // invalidate every in-flight chunk
@@ -3385,8 +3401,21 @@ function _sanitizeForTts(text) {
   return text;
 }
 
-function ttsFeed(fullText, isFinal) {
+function ttsFeed(fullText, isFinal, runId) {
   if (!_ttsEnabled) return;
+  // New streaming run? Reset the slice offset so we chunk THIS run's text from
+  // its start. Backchannel-originated runs never pass through onSend's
+  // ttsReset, so without this they inherit the PREVIOUS turn's _ttsSpokenUpTo
+  // and ttsFeed slices the spoken text from a stale char position — dropping
+  // the opening mid-word ("…oif-sp|ecs…"). Touch ONLY the slice trackers, not
+  // _ttsTurnId or ack state, so video-chat turns (offset already 0, maybe an
+  // ack in flight) are unaffected. closeAckWindow replays with no runId
+  // (undefined), so it never re-triggers this mid-turn.
+  if (runId !== undefined && runId !== _ttsFeedRunId) {
+    _ttsFeedRunId = runId;
+    _ttsSpokenUpTo = 0;
+    _ttsChunkIndex = 0;
+  }
   fullText = _sanitizeForTts(fullText);
   // Hold real text while we're waiting for the ack to land. We only stash
   // the latest cumulative {fullText, isFinal} — closeAckWindow replays it.
@@ -3723,7 +3752,13 @@ function submitWakeBuffer() {
   // own session history IS the conversation; a clean one-line question gets a
   // clean, on-topic answer. (Ambient room transcript intentionally dropped —
   // reliability over back-reference; can be re-added carefully if needed.)
-  const composed = prompt;
+  // Cap the voice turn to the last N words. Ambient call audio rambles for
+  // paragraphs; clawd should react to the most-recent thing said, not a whole
+  // monologue. Combined with the stateless reset in onSend, each turn is a
+  // short, self-contained prompt. (Drop to 32 if 64 still feels too long.)
+  const VOICE_WORD_CAP = 64;
+  const _words = prompt.split(/\s+/);
+  const composed = _words.length > VOICE_WORD_CAP ? _words.slice(-VOICE_WORD_CAP).join(" ") : prompt;
   $input.value = composed;
   autosize($input);
   setPillState("thinking", "thinking…");

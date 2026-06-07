@@ -1,0 +1,342 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>audio routing diagnostic</title>
+<style>
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, sans-serif;
+    background: #1a1a1a; color: #eee;
+    max-width: 880px; margin: 32px auto; padding: 0 24px;
+    line-height: 1.5;
+  }
+  h1 { margin-top: 0; }
+  h2 { margin-top: 32px; color: #ffb; }
+  .row { display: flex; gap: 12px; align-items: center; margin: 12px 0; }
+  button {
+    background: #2a3e50; color: #eee;
+    border: 1px solid #4a6e8e;
+    padding: 14px 18px; border-radius: 8px;
+    font-size: 15px; font-weight: 600;
+    cursor: pointer; min-width: 80px;
+    font-family: ui-monospace, "SF Mono", monospace;
+  }
+  button:hover { background: #3a5e7e; }
+  button:active { transform: translateY(1px); }
+  button:disabled { opacity: 0.4; cursor: not-allowed; }
+  .test-label { flex: 1; }
+  .test-label .name { font-weight: 600; }
+  .test-label .desc {
+    color: #aaa; font-size: 13px;
+    font-family: ui-monospace, "SF Mono", monospace;
+  }
+  .freq {
+    width: 60px; text-align: right;
+    color: #ffd57a;
+    font-family: ui-monospace, "SF Mono", monospace;
+  }
+  pre {
+    background: #111; border: 1px solid #333;
+    padding: 12px; border-radius: 6px;
+    font-size: 12px; line-height: 1.45;
+    max-height: 240px; overflow: auto;
+    color: #cfc;
+  }
+  .devices {
+    background: #222; border: 1px solid #444;
+    padding: 12px 16px; border-radius: 8px;
+    font-family: ui-monospace, "SF Mono", monospace;
+    font-size: 12px;
+  }
+  .devices .dev { padding: 2px 0; }
+  .devices .ok { color: #6f6; }
+  .devices .warn { color: #fc6; }
+  .legend {
+    background: #1f2a35; border: 1px solid #345;
+    padding: 12px 16px; border-radius: 8px;
+    font-size: 13px;
+  }
+  .legend .freq { display: inline-block; }
+  code { background: #333; padding: 1px 6px; border-radius: 3px; }
+</style>
+</head>
+<body>
+
+<h1>🔊 audio routing diagnostic</h1>
+<p>
+  Five buttons, five different ways of playing a beep. Each beep has a
+  unique pitch so you can identify which test fired. Press one button at
+  a time, then check <strong>System Settings → Sound → Input</strong>
+  and the clawd page's MIC bar (if it's open in Safari) to see which
+  device the audio actually landed on.
+</p>
+
+<h2>devices visible to this page</h2>
+<div class="devices" id="devices">waiting on getUserMedia permission grant…</div>
+
+<h2>tests</h2>
+
+<div class="row" id="test-A">
+  <button>play A</button>
+  <span class="freq">220 Hz</span>
+  <div class="test-label">
+    <div class="name">plain Audio element, no routing</div>
+    <div class="desc">new Audio(url).play() — should go to system DEFAULT output (= BH-16ch in this setup).</div>
+  </div>
+</div>
+
+<div class="row" id="test-B">
+  <button>play B</button>
+  <span class="freq">330 Hz</span>
+  <div class="test-label">
+    <div class="name">Audio element + element.setSinkId(BH-2ch)</div>
+    <div class="desc">Routes by setting the element's own sinkId. Tests whether HTMLAudioElement.setSinkId works in this browser.</div>
+  </div>
+</div>
+
+<div class="row" id="test-C">
+  <button>play C</button>
+  <span class="freq">440 Hz</span>
+  <div class="test-label">
+    <div class="name">AudioContext + setSinkId(BH-2ch) + createMediaElementSource</div>
+    <div class="desc">Exactly what clawd does today (before the muted fix). Hypothesis: in Safari this leaks BOTH to BH-2ch AND to default device.</div>
+  </div>
+</div>
+
+<div class="row" id="test-D">
+  <button>play D</button>
+  <span class="freq">554 Hz</span>
+  <div class="test-label">
+    <div class="name">like C, but audio.muted = true</div>
+    <div class="desc">The proposed fix. Should ONLY land on BH-2ch — the element's default-output path is silenced, ctx graph still flows.</div>
+  </div>
+</div>
+
+<div class="row" id="test-E">
+  <button>play E</button>
+  <span class="freq">660 Hz</span>
+  <div class="test-label">
+    <div class="name">AudioContext + setSinkId(BH-2ch) + BufferSource (no element)</div>
+    <div class="desc">Pure Web Audio, no HTMLAudioElement involved. The bulletproof fallback. Should ONLY land on BH-2ch.</div>
+  </div>
+</div>
+
+<h2>what to watch for</h2>
+<div class="legend">
+  Open these side-by-side while you click each button:
+  <ul>
+    <li><strong>System Settings → Sound → Input</strong> — switch the dropdown to <code>BlackHole 16ch</code> then <code>BlackHole 2ch</code>; the meter at the bottom shows live level.</li>
+    <li><strong>clawd page in Safari</strong> — the MIC bar lights up when audio hits whichever device clawd's mic is pinned to (BlackHole 16ch).</li>
+    <li><strong>slop tab in Chrome</strong> — slop's mic indicator lights up when audio hits BlackHole 2ch.</li>
+  </ul>
+  Tell me, for each button: which of those three indicators lit up.
+</div>
+
+<h2>log</h2>
+<pre id="log">waiting…</pre>
+
+<script>
+const $log = document.getElementById("log");
+const $devices = document.getElementById("devices");
+let logBuf = [];
+function log(...args) {
+  const line = args.map(a => typeof a === "string" ? a : JSON.stringify(a)).join(" ");
+  console.log(line);
+  logBuf.push(`[${new Date().toLocaleTimeString()}] ${line}`);
+  if (logBuf.length > 200) logBuf = logBuf.slice(-200);
+  $log.textContent = logBuf.join("\n");
+  $log.scrollTop = $log.scrollHeight;
+}
+
+// ── Beep generator ─────────────────────────────────────────────────────────
+// Generates a 1-second mono sine WAV blob at the given frequency. We need a
+// blob URL (not just an OscillatorNode) because tests A–D play through an
+// HTMLAudioElement, which needs a src.
+async function makeBeepBlob(freq, durationSec = 0.8) {
+  const sr = 44100;
+  const offline = new OfflineAudioContext(1, Math.floor(sr * durationSec), sr);
+  const osc = offline.createOscillator();
+  const gain = offline.createGain();
+  osc.frequency.value = freq;
+  gain.gain.value = 0.2;
+  // Short fade in/out to avoid clicks.
+  const t = offline.currentTime;
+  gain.gain.setValueAtTime(0, t);
+  gain.gain.linearRampToValueAtTime(0.2, t + 0.02);
+  gain.gain.setValueAtTime(0.2, t + durationSec - 0.05);
+  gain.gain.linearRampToValueAtTime(0, t + durationSec);
+  osc.connect(gain).connect(offline.destination);
+  osc.start();
+  osc.stop(durationSec);
+  const rendered = await offline.startRendering();
+  return audioBufferToWavBlob(rendered);
+}
+
+function audioBufferToWavBlob(buf) {
+  const numCh = buf.numberOfChannels;
+  const sr = buf.sampleRate;
+  const samples = buf.length;
+  const bytesPerSample = 2;
+  const dataLen = samples * numCh * bytesPerSample;
+  const ab = new ArrayBuffer(44 + dataLen);
+  const dv = new DataView(ab);
+  let p = 0;
+  function wstr(s) { for (const c of s) dv.setUint8(p++, c.charCodeAt(0)); }
+  function wu32(v) { dv.setUint32(p, v, true); p += 4; }
+  function wu16(v) { dv.setUint16(p, v, true); p += 2; }
+  wstr("RIFF"); wu32(36 + dataLen); wstr("WAVE");
+  wstr("fmt "); wu32(16); wu16(1); wu16(numCh); wu32(sr);
+  wu32(sr * numCh * bytesPerSample); wu16(numCh * bytesPerSample); wu16(8 * bytesPerSample);
+  wstr("data"); wu32(dataLen);
+  for (let i = 0; i < samples; i++) {
+    for (let ch = 0; ch < numCh; ch++) {
+      const s = Math.max(-1, Math.min(1, buf.getChannelData(ch)[i]));
+      dv.setInt16(p, s * 0x7fff, true); p += 2;
+    }
+  }
+  return new Blob([ab], { type: "audio/wav" });
+}
+
+// ── Device enumeration ─────────────────────────────────────────────────────
+let bh2OutId = null;
+let bh16OutId = null;
+
+async function refreshDevices() {
+  // Prime perms so labels populate.
+  try {
+    const probe = await navigator.mediaDevices.getUserMedia({ audio: true });
+    probe.getTracks().forEach(t => t.stop());
+  } catch (e) {
+    $devices.innerHTML = `<span class="warn">mic permission denied — labels will be empty. err: ${e.message}</span>`;
+  }
+  const devs = await navigator.mediaDevices.enumerateDevices();
+  const outs = devs.filter(d => d.kind === "audiooutput");
+  const ins = devs.filter(d => d.kind === "audioinput");
+  bh2OutId = (outs.find(d => /blackhole\s*2ch/i.test(d.label)) || {}).deviceId || null;
+  bh16OutId = (outs.find(d => /blackhole\s*16ch/i.test(d.label)) || {}).deviceId || null;
+
+  const lines = [];
+  lines.push(`<div class="dev"><strong>tests B/C/D/E will route audio to:</strong></div>`);
+  lines.push(`<div class="dev">    ${bh2OutId
+      ? `BlackHole 2ch  (id ${bh2OutId.slice(0,12)}…)`
+      : `<span class="warn">NOT FOUND — tests B/C/D/E will not play</span>`}</div>`);
+  lines.push(`<div class="dev" style="margin-top:14px"><strong>outputs:</strong></div>`);
+  for (const d of outs) {
+    const tag = (d.deviceId === bh2OutId)
+        ? "  &lt;-- tests B/C/D/E route here"
+        : "";
+    lines.push(`<div class="dev">• ${d.label || "(no label)"}${tag}  <span style="color:#777">id:${d.deviceId.slice(0,12)}…</span></div>`);
+  }
+  lines.push(`<div class="dev" style="margin-top:8px"><strong>inputs:</strong></div>`);
+  for (const d of ins) {
+    lines.push(`<div class="dev">• ${d.label || "(no label)"}  <span style="color:#777">id:${d.deviceId.slice(0,12)}…</span></div>`);
+  }
+  if (!bh2OutId)  lines.push(`<div class="dev warn">[!] BlackHole 2ch NOT visible — tests B/C/D/E will fail.</div>`);
+  if (!bh16OutId) lines.push(`<div class="dev warn">[!] BlackHole 16ch not visible (only matters if you want to test routing to it explicitly).</div>`);
+  $devices.innerHTML = lines.join("");
+  log("devices enumerated. BH-2ch:", !!bh2OutId, " BH-16ch:", !!bh16OutId);
+}
+
+// ── Test runners ───────────────────────────────────────────────────────────
+async function testA() {
+  log("▶ A — plain Audio.play(), no routing");
+  const blob = await makeBeepBlob(220);
+  const url = URL.createObjectURL(blob);
+  const a = new Audio(url);
+  a.onended = () => { URL.revokeObjectURL(url); log("  A done"); };
+  await a.play();
+}
+
+async function testB() {
+  log("▶ B — Audio + element.setSinkId(BH-2ch)");
+  if (!bh2OutId) return log("  ✗ no BH-2ch deviceId");
+  const blob = await makeBeepBlob(330);
+  const url = URL.createObjectURL(blob);
+  const a = new Audio(url);
+  if (typeof a.setSinkId === "function") {
+    try { await a.setSinkId(bh2OutId); log("  setSinkId ok"); }
+    catch (e) { log("  setSinkId threw:", e.message); }
+  } else {
+    log("  ✗ HTMLAudioElement.setSinkId not supported in this browser");
+  }
+  a.onended = () => { URL.revokeObjectURL(url); log("  B done"); };
+  await a.play();
+}
+
+async function testC() {
+  log("▶ C — AudioContext + ctx.setSinkId(BH-2ch) + createMediaElementSource");
+  if (!bh2OutId) return log("  ✗ no BH-2ch deviceId");
+  const ctx = new AudioContext();
+  if (typeof ctx.setSinkId === "function") {
+    try { await ctx.setSinkId(bh2OutId); log("  ctx.setSinkId ok"); }
+    catch (e) { log("  ctx.setSinkId threw:", e.message); }
+  } else {
+    log("  ✗ AudioContext.setSinkId not supported in this browser");
+  }
+  const blob = await makeBeepBlob(440);
+  const url = URL.createObjectURL(blob);
+  const a = new Audio(url);
+  const src = ctx.createMediaElementSource(a);
+  src.connect(ctx.destination);
+  a.onended = () => { URL.revokeObjectURL(url); ctx.close(); log("  C done"); };
+  await a.play();
+}
+
+async function testD() {
+  log("▶ D — like C, but audio.muted = true");
+  if (!bh2OutId) return log("  ✗ no BH-2ch deviceId");
+  const ctx = new AudioContext();
+  if (typeof ctx.setSinkId === "function") {
+    try { await ctx.setSinkId(bh2OutId); log("  ctx.setSinkId ok"); }
+    catch (e) { log("  ctx.setSinkId threw:", e.message); }
+  }
+  const blob = await makeBeepBlob(554);
+  const url = URL.createObjectURL(blob);
+  const a = new Audio(url);
+  const src = ctx.createMediaElementSource(a);
+  src.connect(ctx.destination);
+  a.muted = true;
+  a.onended = () => { URL.revokeObjectURL(url); ctx.close(); log("  D done"); };
+  await a.play();
+}
+
+async function testE() {
+  log("▶ E — AudioContext + setSinkId(BH-2ch) + BufferSource (no element)");
+  if (!bh2OutId) return log("  ✗ no BH-2ch deviceId");
+  const ctx = new AudioContext();
+  if (typeof ctx.setSinkId === "function") {
+    try { await ctx.setSinkId(bh2OutId); log("  ctx.setSinkId ok"); }
+    catch (e) { log("  ctx.setSinkId threw:", e.message); }
+  }
+  // Render the same beep into a buffer, then play through BufferSource.
+  const sr = ctx.sampleRate;
+  const duration = 0.8;
+  const offline = new OfflineAudioContext(1, Math.floor(sr * duration), sr);
+  const osc = offline.createOscillator();
+  const gain = offline.createGain();
+  osc.frequency.value = 660;
+  gain.gain.setValueAtTime(0, 0);
+  gain.gain.linearRampToValueAtTime(0.2, 0.02);
+  gain.gain.setValueAtTime(0.2, duration - 0.05);
+  gain.gain.linearRampToValueAtTime(0, duration);
+  osc.connect(gain).connect(offline.destination);
+  osc.start();
+  osc.stop(duration);
+  const buf = await offline.startRendering();
+  const src = ctx.createBufferSource();
+  src.buffer = buf;
+  src.connect(ctx.destination);
+  src.onended = () => { ctx.close(); log("  E done"); };
+  src.start();
+}
+
+document.querySelector("#test-A button").addEventListener("click", testA);
+document.querySelector("#test-B button").addEventListener("click", testB);
+document.querySelector("#test-C button").addEventListener("click", testC);
+document.querySelector("#test-D button").addEventListener("click", testD);
+document.querySelector("#test-E button").addEventListener("click", testE);
+
+refreshDevices();
+</script>
+</body>
+</html>
