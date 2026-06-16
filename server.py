@@ -304,6 +304,23 @@ class Handler(BaseHTTPRequestHandler):
             self.rfile.read(length)
             push_event("reveal-history")
             self.send_json({"ok": True})
+        elif path == "/trigger-stop":
+            # Cross-page PANIC STOP. The backchannel UI (:7850) POSTs here when
+            # the user types /stop, so the voice cuts out IMMEDIATELY even when
+            # no run is active (model done generating but TTS still draining).
+            # The browser handles "stop" by hard-resetting the TTS pipeline.
+            try:
+                length = int(self.headers.get("Content-Length", 0))
+                if length:
+                    self.rfile.read(length)
+            except Exception:
+                pass
+            push_event("stop")
+            self.send_response(200)
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(b'{"ok":true}')
         else:
             self.send_error(404)
 
@@ -420,15 +437,35 @@ class Handler(BaseHTTPRequestHandler):
                     "about to do. Examples: 'Let me grep for that.', "
                     "'Pulling up the file now.', 'Running a quick check.'"
                 )
-            else:  # thinking / reasoning
+            else:  # thinking / reasoning — a CONTINUED stall, never the content
+                # IMPORTANT: do NOT paraphrase the model's reasoning. For simple
+                # questions the reasoning IS the answer ("they asked if I can
+                # hear them — yes, loud and clear"), so paraphrasing leaks it
+                # out loud before the real reply. This kind is ONLY a "still
+                # thinking" noise; we deliberately do NOT pass thinking_text in.
                 system = (
-                    "You paraphrase, casually and out loud, the inner thought "
-                    "of an AI assistant. One short sentence, under 16 words, "
-                    "first person, no quotes."
+                    "You are a voice filling dead air out loud while a smarter "
+                    "model is STILL composing the real answer — it's been "
+                    "thinking for a moment. Your ONLY job is a short, natural "
+                    "'still working on it' stall. You are NOT answering and you "
+                    "do NOT know the answer.\n"
+                    "\n"
+                    "Examples: 'Still thinking on this one.' 'Hmm, lemme keep "
+                    "digging.' 'Bear with me a sec.' 'Almost there.' 'Working "
+                    "through it.' 'Still on it.' 'One more moment.' 'Yeah, "
+                    "lemme sit with this.'\n"
+                    "\n"
+                    "Hard rules:\n"
+                    "  - NEVER answer, hint at, or reveal any part of the answer "
+                    "or the model's reasoning. No facts, no conclusions.\n"
+                    "  - NEVER name the topic or repeat words from the question.\n"
+                    "  - Under 12 words, first person, spoken-aloud, no quotes, "
+                    "no emojis. Output ONLY the stall."
                 )
                 user_msg = (
-                    f"Inner thought:\n{thinking_text}\n\n"
-                    "Paraphrase the gist out loud in one short sentence."
+                    "The model is still thinking. Give ONE short, fresh "
+                    "'still working on it' stall. Do NOT reveal or hint at "
+                    "anything it's thinking about."
                 )
 
             msgs = [{"role": "system", "content": system}]
@@ -449,9 +486,9 @@ class Handler(BaseHTTPRequestHandler):
                 venice_model="claude-sonnet-4-6",
                 anthropic_model="claude-haiku-4-5",
                 timeout=10,
-                # High temp on the ack only — its whole value is sounding
-                # fresh and varied each time, not correct.
-                temperature=(1.0 if kind == "ack" else None),
+                # High temp on the pure-stall kinds (ack + thinking) — their
+                # whole value is sounding fresh/varied each time, not correct.
+                temperature=(1.0 if kind in ("ack", "thinking") else None),
             )
             import re
             text = re.sub(r"<think>.*?</think>", "", raw, flags=re.DOTALL).strip()
@@ -671,7 +708,12 @@ if __name__ == "__main__":
     print("   tip: ?dev=1 in the URL drops OBS mode and shows the full chat UI.")
     check_allowed_origins(PORT)
     try:
-        ThreadedHTTPServer(("127.0.0.1", PORT), Handler).serve_forever()
+        # Bind 0.0.0.0 (LAN) so the backchannel — which may be open on Austin's
+        # phone — can reach POST /trigger-stop for the cross-page PANIC STOP.
+        # Matches clawd-backchannel's existing 0.0.0.0 posture (same LAN, same
+        # gateway token already exposed there). The Mac's OBS browser still uses
+        # 127.0.0.1:7900 unchanged.
+        ThreadedHTTPServer(("0.0.0.0", PORT), Handler).serve_forever()
     except KeyboardInterrupt:
         print("\nbye")
         sys.exit(0)

@@ -2254,12 +2254,18 @@ function handleChatEvent(payload) {
     applyVisibility(tab.paneEl);
   } else if (chatState === "aborted") {
     if (t.tickerId) clearInterval(t.tickerId);
+    // HARD STOP. A run abort (e.g. /stop typed in the backchannel) MUST kill
+    // the voice immediately — ttsReset() bumps the turn id, drops the queue,
+    // aborts in-flight TTS fetches, and pauses the currently-playing blob.
+    // Without this, aborting the run left already-queued audio playing.
+    ttsReset();
     t.footerEl.innerHTML = `<div style="color:var(--warn); font-size:12px">⏹ aborted</div>`;
     tab.activeRunId = null;
     removePendingByRunId(tab, runId);
     resolveTabRunCompletion(tab, runId, "aborted");
   } else if (chatState === "error") {
     if (t.tickerId) clearInterval(t.tickerId);
+    ttsReset();   // stop any audio on error too
     t.footerEl.innerHTML = `<div style="color:var(--bad); font-size:12px">⚠ ${errorMessage || "error"}</div>`;
     tab.activeRunId = null;
     removePendingByRunId(tab, runId);
@@ -3524,7 +3530,7 @@ const $statusLabel = $statusPill ? $statusPill.querySelector(".label") : null;
 // (cloud/clawd/clyde/klaus/…). Matched against a rolling recent-speech window
 // (see WAKE_WINDOW_MS) so the two words still match when SR splits them into
 // separate chunks — that chunk-split, not the prefix, was the main miss.
-const WAKE_RE = /\b(?:so|okay|ok)[\s,]+(claude|clawd|claud|cloud|clyde|clod|clot|klaus|claus|clawed|clawde|claude?o|glaude)\b/i;
+const WAKE_RE = /\b(?:so|okay|ok)[\s,-]+(claude|clawd|claud|cloud|clyde|clod|clot|klaus|claus|clawed|clawde|claude?o|glaude)s?\b/i;
 const WAKE_STRIP_RE = new RegExp(WAKE_RE.source, "gi");  // strip every wake phrase from the captured command
 const WAKE_WINDOW_MS = 6000;        // join SR text from the last ~6s for wake matching + command capture (covers "talk first, then drop the wake word")
 const SILENCE_MS = 2500;            // how long of TRUE silence after wake before submitting (raised from 1500 — was cutting people off mid-sentence on natural pauses)
@@ -4001,6 +4007,18 @@ try {
   const _wakeEvents = new EventSource("/events");
   _wakeEvents.onmessage = (e) => {
     if (e.data === "toggle-mic" && $btnMic) $btnMic.click();
+    else if (e.data === "stop") {
+      // PANIC STOP relayed from the backchannel /stop (POST /trigger-stop).
+      // Kill the voice immediately — works even when no run is active (model
+      // done, TTS still draining). Also abort any still-active run.
+      console.log("%c[clawd] PANIC STOP (backchannel /stop)", "color:#e55a2b;font-weight:bold");
+      ttsReset();
+      const tab = (typeof currentTab === "function") ? currentTab() : null;
+      if (tab && tab.activeRunId) {
+        try { rpc("chat.abort", { sessionKey: tab.sessionKey, runId: tab.activeRunId }).catch(() => {}); } catch (e) {}
+        tab.activeRunId = null;
+      }
+    }
   };
 } catch (e) { /* SSE optional */ }
 

@@ -20,7 +20,7 @@
 #
 # What this script does, in order:
 #   1. Snapshot current macOS default in/out devices so we can restore them.
-#   2. Set system input + output → BlackHole 16ch.
+#   2. Set system input + output → BlackHole 2ch.
 #   3. Start python3 server.py on port 7900 if not already running.
 #   4. Open a fresh Chrome window at clawd; capture its CGWindow ID.
 #   5. Patch the OBS scene so $OBS_SOURCE_NAME captures that Chrome window.
@@ -34,7 +34,7 @@
 #
 # Requires:
 #   • brew install switchaudio-osx
-#   • BlackHole 2ch + BlackHole 16ch
+#   • BlackHole 2ch
 #   • Brave Browser installed
 #   • OBS with a window-capture source named CLAWDSCREEN inside scene CLAWD
 #   • Screen Recording permission granted to whichever Terminal app you
@@ -42,12 +42,12 @@
 
 set -euo pipefail
 
-CLAWD_DIR="/Users/austingriffith/clawd/clawd-video-chat"
+CLAWD_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CLAWD_URL="http://127.0.0.1:7900/"
-SLOP_URL="https://live.slop.computer/?invite=BSy1pddfpFKc"
+SLOP_URL="https://live.slop.computer/clawdbotatg?invite=o6nYhKLvQAZiOoAk"
 
 SYS_INPUT_DEVICE="BlackHole 2ch"
-SYS_OUTPUT_DEVICE="BlackHole 16ch"
+SYS_OUTPUT_DEVICE="BlackHole 2ch"
 
 OBS_SCENE="$HOME/Library/Application Support/obs-studio/basic/scenes/Untitled.json"
 OBS_SOURCE_NAME="CLAWDSCREEN"
@@ -63,7 +63,6 @@ command -v SwitchAudioSource >/dev/null \
 
 DEVICES="$(SwitchAudioSource -a)"
 grep -q "BlackHole 2ch"  <<<"$DEVICES" || die "BlackHole 2ch not installed."
-grep -q "BlackHole 16ch" <<<"$DEVICES" || die "BlackHole 16ch not installed."
 
 # ── 2. Snapshot prior audio defaults ─────────────────────────────────────────
 STATE_FILE="$HOME/.cache/clawd/slop-bridge.state"
@@ -281,8 +280,8 @@ cat <<EOF
 $(printf "\033[1;32m✓ bridge is up\033[0m")
 
 audio routing now in effect:
-  remote voices on slop → BlackHole 16ch → clawd's mic / SR
-  clawd's TTS           → BlackHole 2ch  → slop's mic
+  remote voices on slop → BlackHole 2ch → clawd's mic / SR
+  clawd's TTS           → BlackHole 2ch → slop's mic
 
 one-time per-browser setup (skip if already done):
   • Chrome clawd tab : grant mic permission on first prompt.

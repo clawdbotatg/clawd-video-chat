@@ -7,7 +7,7 @@
 
 set -euo pipefail
 
-CLAWD_DIR="/Users/austingriffith/clawd/clawd-video-chat"
+CLAWD_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 URL="http://127.0.0.1:7900/"
 CHROME_PROFILE="$HOME/Library/Application Support/clawd-chrome-profile"
 CHROME_BIN="/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
