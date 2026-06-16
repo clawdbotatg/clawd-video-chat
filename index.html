@@ -2387,32 +2387,15 @@ function connect() {
   }
   state.ws = ws;
 
-  ws.onopen = async () => {
-    try {
-      const ident = await getOrCreateIdentity();
-      const scopes = ["operator.read", "operator.write", "operator.admin"];
-      const clientId = "openclaw-control-ui";
-      const clientMode = "ui";
-      const role = "operator";
-      const device = await signDevicePayload(ident, {
-        clientId, clientMode, role, scopes, token: state.config.token || null, nonce: state.connectNonce || null,
-      });
-      await rpc("connect", {
-        minProtocol: 3,
-        maxProtocol: 3,
-        client: { id: clientId, displayName: "clawd-web", version: "0.1.0", platform: "web", mode: clientMode },
-        role, scopes,
-        caps: ["tool-events"],
-        auth: state.config.token ? { token: state.config.token } : undefined,
-        locale: navigator.language || "en-US",
-        userAgent: navigator.userAgent,
-        device,
-      });
-      onConnected();
-    } catch (err) {
-      setStatus("bad", "auth failed");
-      renderError("Handshake failed: " + (err.message || err));
-    }
+  ws.onopen = () => {
+    // We connect through the clawd-backchannel WS proxy (:7851), which performs
+    // the gateway's Ed25519 device handshake — including the nonce challenge —
+    // server-side with its own identity. So the browser sends NO connect frame:
+    // it just waits for the proxy's synthetic `proxy.ready` event (see onFrame),
+    // then starts app RPCs. `proxy.error` surfaces a server-side auth failure.
+    // (The old client-side handshake raced the gateway's `connect.challenge`,
+    // signing before the nonce arrived → "device must have property 'nonce'".)
+    setStatus("connecting", "authenticating…");
   };
 
   ws.onmessage = (ev) => {
@@ -2502,6 +2485,13 @@ function onFrame(frame) {
     switch (frame.event) {
       case "chat":  return handleChatEvent(frame.payload);
       case "agent": return handleAgentEvent(frame.payload);
+      case "proxy.ready":
+        // The backchannel proxy finished its server-side gateway handshake.
+        return onConnected();
+      case "proxy.error":
+        setStatus("bad", "auth failed");
+        renderError("Proxy gateway auth failed: " + (frame.payload?.message || "unknown"));
+        return;
       case "connect.challenge":
         if (frame.payload?.nonce) state.connectNonce = frame.payload.nonce;
         return;
