@@ -5,18 +5,18 @@
 #   • Chrome  hosts clawd at http://127.0.0.1:7900/
 #   • OBS     does macOS Screen Capture of that Chrome window, virtual-cam
 #             feeds it out (audio muted in OBS — we route audio separately)
-#   • Brave   hosts https://live.slop.computer/ — picks up OBS virtual cam
-#             for video and reads BlackHole 2ch for clawd's audio
+#   • Chrome Canary hosts https://live.slop.computer/ — picks up OBS virtual
+#             cam for video and reads BlackHole 2ch for clawd's audio
 #
 # Why this specific pair of browsers:
 #   • Chrome (not Safari) for clawd because Safari has a getUserMedia bug
 #     where it silently returns audio from a different BlackHole device than
 #     the one we asked for, breaking clean routing.
-#   • Brave (not Chrome) for slop because Chrome's AEC links audio between
-#     tabs in the same browser process, causing feedback when clawd's TTS
-#     and slop's mic both live in Chrome. Brave is a separate process, so
-#     no AEC link. (Brave is Chromium-based so its getUserMedia works
-#     correctly, unlike Safari.)
+#   • Chrome Canary (not stable Chrome) for slop because Chrome's AEC links
+#     audio between tabs in the same browser process, causing feedback when
+#     clawd's TTS and slop's mic both live in Chrome. Canary is a separate
+#     app/process, so no AEC link. (Canary is Chromium-based so its
+#     getUserMedia works correctly, unlike Safari.)
 #
 # What this script does, in order:
 #   1. Snapshot current macOS default in/out devices so we can restore them.
@@ -25,17 +25,17 @@
 #   4. Open a fresh Chrome window at clawd; capture its CGWindow ID.
 #   5. Patch the OBS scene so $OBS_SOURCE_NAME captures that Chrome window.
 #   6. Launch OBS with virtual-cam started.
-#   7. Open https://live.slop.computer/?invite=... in Brave.
+#   7. Open https://live.slop.computer/?invite=... in Chrome Canary.
 #
 # What it intentionally does NOT do (one-time UI setup; browsers remember):
 #   • Grant Chrome mic permission for clawd — first-time prompt.
-#   • Pick "BlackHole 2ch" as the mic device in Brave's slop tab —
+#   • Pick "BlackHole 2ch" as the mic device in Chrome Canary's slop tab —
 #     do this once via 🔒 → site permissions → Microphone.
 #
 # Requires:
 #   • brew install switchaudio-osx
 #   • BlackHole 2ch
-#   • Brave Browser installed
+#   • Google Chrome Canary installed
 #   • OBS with a window-capture source named CLAWDSCREEN inside scene CLAWD
 #   • Screen Recording permission granted to whichever Terminal app you
 #     run this from (needed by the swift CGWindow snippet below)
@@ -265,13 +265,13 @@ else
     warn "Live window-bind failed. In OBS: double-click the screen-capture source → pick the 127.0.0.1:7900 window."
 fi
 
-# ── 9. Open slop in Brave ────────────────────────────────────────────────────
-# Brave (not Chrome) so it's a separate process from clawd's Chrome instance,
-# breaking Chrome's same-browser AEC link that would otherwise feedback the
-# two tabs together. Brave is Chromium-based so its getUserMedia respects
-# the explicit BlackHole 2ch device choice (Safari does not — confirmed).
-say "Opening slop in Brave → $SLOP_URL"
-open -a "Brave Browser" "$SLOP_URL"
+# ── 9. Open slop in Chrome Canary ────────────────────────────────────────────
+# Chrome Canary (not stable Chrome) so it's a separate app/process from clawd's
+# Chrome instance, breaking Chrome's same-browser AEC link that would otherwise
+# feedback the two tabs together. Canary is Chromium so its getUserMedia
+# respects the explicit BlackHole 2ch device choice (Safari does not — confirmed).
+say "Opening slop in Chrome Canary → $SLOP_URL"
+open -a "Google Chrome Canary" "$SLOP_URL"
 
 # ── 10. Recap ────────────────────────────────────────────────────────────────
 cat <<EOF
@@ -284,10 +284,10 @@ audio routing now in effect:
   clawd's TTS           → BlackHole 2ch → slop's mic
 
 one-time per-browser setup (skip if already done):
-  • Chrome clawd tab : grant mic permission on first prompt.
-  • Brave  slop tab  : grant mic and pick \"BlackHole 2ch\" in the
-                       device picker, OR click 🔒 → site
-                       permissions → Microphone → BlackHole 2ch.
+  • Chrome clawd tab        : grant mic permission on first prompt.
+  • Chrome Canary slop tab  : grant mic and pick \"BlackHole 2ch\" in the
+                              device picker, OR click 🔒 → site
+                              permissions → Microphone → BlackHole 2ch.
 
 obs:
   • Scene CLAWD active, CLAWDSCREEN pointed at Chrome window $NEW_WID
