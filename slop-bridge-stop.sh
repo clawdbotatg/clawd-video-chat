@@ -1,9 +1,9 @@
 #!/bin/bash
 # slop-bridge-stop.sh — full teardown for the clawd ↔ slop bridge:
-#   1. Close any Safari tabs pointing at the clawd server.
+#   1. Close any Chrome tabs pointing at the clawd server.
 #   2. Kill anything listening on port 7900 (the clawd server).
 #   3. Restore system audio defaults to what they were before bring-up.
-# Does NOT quit Chrome, Safari, or OBS — close those manually if desired.
+# Does NOT quit Chrome, Chrome Canary, or OBS — close those manually if desired.
 
 set -euo pipefail
 

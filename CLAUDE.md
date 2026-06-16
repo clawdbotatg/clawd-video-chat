@@ -8,32 +8,76 @@ These notes are for the things you can't infer from reading code.
 
 | User says… | You do |
 |---|---|
-| "fire up the system" / "bring up the bridge" / "start everything" / "set it all up" | Run `./slop-bridge.sh` |
+| "fire up the video chat" / "fire up the system" / "bring up the bridge" / "start everything" / "set it all up" | **The full runbook below** (mainly: `./slop-bridge.sh`) |
 | "tear down" / "give me my mic back" / "restore audio" / "stop the bridge" | Run `./slop-bridge-stop.sh` |
-| "open clawd" (no bridge, just the page) | `open -a Safari http://127.0.0.1:7900` after confirming `server.py` is up |
+| "open clawd" (no bridge, just the page) | `open -a "Google Chrome" http://127.0.0.1:7900` after confirming `server.py` is up |
 
-## `slop-bridge.sh` — what it does
+## "Fire up the video chat" — full runbook
 
-End-to-end startup for the working Chrome↔Brave BlackHole bridge:
+This project is the **harness clone** at
+`clawd-harness/projects/clawd-video-chat` — the live source of truth. (An older
+standalone clone at `~/clawd/clawd-video-chat` is **orphaned; ignore it.**) The
+desktop buttons `🎙 Clawd Bridge UP/DOWN.command` already point here.
 
-1. Saves current macOS default in/out devices → `~/.cache/clawd/slop-bridge.state`.
-2. Sets system input + output to **BlackHole 16ch** via `SwitchAudioSource`.
-3. Starts `python3 server.py` if port 7900 isn't responding.
-4. Opens a fresh **Chrome** window at `http://127.0.0.1:7900` (clawd).
-5. Captures that window's CGWindow ID; patches OBS scene
-   `Untitled.json` so source `CLAWDSCREEN` in scene `CLAWD` points at it
-   (macOS Screen Capture, `application = com.google.Chrome`).
-6. Launches OBS with `--startvirtualcam` (audio muted in OBS).
-7. Opens `https://live.slop.computer/?invite=…` in **Brave**.
+**You (an agent) can run the whole bring-up yourself** — Automation +
+Screen-Recording perms work from the Bash tool (tested). You do **not** need the
+user to double-click the desktop button. Steps:
+
+1. **Pre-flight (one-time-ish):** ensure the gitignored **`.env`** exists in this
+   dir (PORT=7900 + ELEVENLABS/OPENCLAW/OPENAI secrets + `OPENCLAW_WS_URL`
+   pointing at the backchannel proxy). If missing, copy it:
+   `cp ~/clawd/clawd-video-chat/.env ./.env` (never commit it).
+2. **Deps clawd talks to** (`slop-bridge.sh` warns if down):
+   - **openclaw gateway** — launchd `ai.openclaw.gateway`, `ws://127.0.0.1:18789`.
+     Restart: `launchctl kickstart -k gui/$(id -u)/ai.openclaw.gateway`.
+   - **clawd-backchannel proxy** on **`:7851`** — clawd reaches the gateway
+     *through* it (it does the gateway's Ed25519 nonce handshake server-side; the
+     browser can't). Start: `(cd ~/clawd/clawd-backchannel && nohup python3
+     server.py >/tmp/clawd-backchannel.log 2>&1 &)`. Without it → "gateway
+     disconnected". (See `gateway-via-backchannel-proxy` memory.)
+3. **Run it:** `./slop-bridge.sh` (self-contained — strips a stray `PORT`,
+   self-heals the OBS bind, opens slop in the right Canary profile). It:
+   1. Snapshots current audio devices → `~/.cache/clawd/slop-bridge.state`.
+   2. Sets system in **and** out → **BlackHole 2ch**, and spawns a 2s watcher
+      that re-pins them.
+   3. Starts `python3 server.py` on `:7900` if not already up.
+   4. Opens a fresh **Chrome** window at `http://127.0.0.1:7900` (clawd) and
+      matches its CGWindow id.
+   5. Patches OBS scene `Untitled.json` so the screen-capture source in scene
+      `CLAWD` points at that window; launches OBS `--startvirtualcam`; binds the
+      window live over obs-websocket (retries until OBS is ready).
+   6. Opens `https://live.slop.computer/…` in **Chrome Canary**, **Default
+      ("openclaw") profile** (has the slop mic permission + MetaMask wallet).
+4. **Known first-run hiccup:** OBS may pop *"virtual camera is not installed."*
+   It's usually a **stale warning** (the extension is already
+   `activated enabled` — check `systemextensionsctl list | grep obs`). Click OK,
+   quit+relaunch OBS (`open -ga OBS --args --startvirtualcam`), re-run
+   `obs_bind_window.py`. No System Settings change needed.
+5. **Verify:** gateway detail log `/tmp/openclaw/openclaw-<date>.log` shows
+   `device pairing auto-approved role=operator` then `✓ sessions.patch` /
+   `✓ chat.history`; `system_profiler SPCameraDataType | grep OBS` lists the
+   virtual cam; audio in/out both `BlackHole 2ch`.
+6. **Wallet connect is NOT yours.** The slop `[connect wallet]` flow fires
+   clawd's MetaMask (a real signature/identity action). **Hand that to openclaw /
+   the user — do not auto-click or sign.**
+
+### Two agent-shell gotchas (already handled by the script; FYI)
+- The clawd-harness exports **`PORT=8787`** into agent shells; `slop-bridge.sh`
+  now `unset PORT`s before launching `server.py` so `.env`'s 7900 applies.
+- This Mac's **LAN IP is DHCP** and has changed (was `.56`, now check
+  `ipconfig getifaddr en0`). The backchannel page is
+  `http://<lan-ip>:7850/?k=<BACKCHANNEL_TOKEN>` (token in `clawd-backchannel/.env`).
 
 ## `slop-bridge-stop.sh` — teardown
 
-1. Closes any Safari tabs pointing at `http://127.0.0.1:7900`.
+1. Kills the audio-defaults watcher, then closes any **Chrome** tabs pointing at
+   `http://127.0.0.1:7900`.
 2. Kills whatever is listening on port 7900 (the clawd server).
 3. Restores the previous default in/out audio devices from the state file.
 
-Doesn't quit Safari/Chrome/OBS themselves — close those manually if you
-want them gone.
+Doesn't quit Chrome/Chrome Canary/OBS themselves — close those manually if you
+want them gone. (Note: if audio was already BlackHole 2ch at bring-up time, the
+snapshot restores it to 2ch — it can't recover devices a *prior* run overwrote.)
 
 ## Why Chrome for clawd + Chrome Canary for slop?
 

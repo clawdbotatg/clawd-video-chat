@@ -115,7 +115,11 @@ if curl -sf -m 2 "$CLAWD_URL" >/dev/null; then
 else
     say "Starting clawd server.py…"
     LOG="/tmp/clawd-server.log"
-    (cd "$CLAWD_DIR" && nohup python3 server.py >"$LOG" 2>&1 &)
+    # Strip any inherited PORT before launching. The clawd-harness exports
+    # PORT=8787 into agent shells; server.py reads PORT from .env (7900) but
+    # os.environ.setdefault can't override an already-exported var, so a stray
+    # PORT would bind the wrong port and collide. Unsetting lets .env's 7900 win.
+    (cd "$CLAWD_DIR" && unset PORT && nohup python3 server.py >"$LOG" 2>&1 &)
     for _ in $(seq 1 60); do
         curl -sf -m 1 "$CLAWD_URL" >/dev/null && break
         sleep 0.5
@@ -123,6 +127,20 @@ else
     curl -sf -m 1 "$CLAWD_URL" >/dev/null \
         || die "Clawd server didn't come up. Check $LOG"
     say "Clawd server up. Log: $LOG"
+fi
+
+# ── 4b. openclaw connectivity deps ───────────────────────────────────────────
+# clawd-video-chat reaches the openclaw gateway THROUGH clawd-backchannel's WS
+# proxy on :7851 (the proxy does the gateway's Ed25519 nonce handshake
+# server-side; clawd's browser can't). If the proxy is down, clawd loads but
+# shows "gateway disconnected" — so warn loudly.
+if ! lsof -nP -iTCP:7851 -sTCP:LISTEN >/dev/null 2>&1; then
+    warn "clawd-backchannel proxy (:7851) is NOT up — clawd will show 'gateway disconnected'.
+    Start it:  (cd ~/clawd/clawd-backchannel && nohup python3 server.py >/tmp/clawd-backchannel.log 2>&1 &)"
+fi
+if ! lsof -nP -iTCP:18789 -sTCP:LISTEN >/dev/null 2>&1; then
+    warn "openclaw gateway (:18789) is NOT up. It's launchd-managed; try:
+    launchctl kickstart -k gui/\$(id -u)/ai.openclaw.gateway"
 fi
 
 # ── 5. Quit OBS so JSON edits stick on next launch ───────────────────────────
@@ -256,13 +274,26 @@ open -ga OBS --args --startvirtualcam
 # title (falling back to the CGWindow id matched above), and pushes the
 # settings live — forcing the rebind a cold load misses.
 say "Binding OBS capture → clawd window (live, via obs-websocket)…"
-if python3 "$CLAWD_DIR/obs_bind_window.py" \
-        --scene "$OBS_ACTIVE_SCENE" \
-        --match "7900,clawd-video-chat,clawd,127.0.0.1" \
-        --fallback-window "$NEW_WID"; then
-    :
+# OBS often isn't ready to answer obs-websocket right after launch — especially
+# on the first run, when it pops a "virtual camera not installed" extension
+# dialog that blocks until dismissed. Retry for a while before giving up.
+obs_bound=""
+for _ in $(seq 1 20); do
+    if python3 "$CLAWD_DIR/obs_bind_window.py" \
+            --scene "$OBS_ACTIVE_SCENE" \
+            --match "7900,clawd-video-chat,clawd,127.0.0.1" \
+            --fallback-window "$NEW_WID" >/dev/null 2>&1; then
+        obs_bound=1; break
+    fi
+    sleep 1
+done
+if [ -n "$obs_bound" ]; then
+    say "OBS capture bound → clawd window $NEW_WID"
 else
-    warn "Live window-bind failed. In OBS: double-click the screen-capture source → pick the 127.0.0.1:7900 window."
+    warn "Live window-bind failed after retries.
+    • If OBS showed 'virtual camera is not installed', click OK (the extension is
+      usually already enabled — it's a stale first-launch warning), then re-run.
+    • Or in OBS: double-click the screen-capture source → pick the 127.0.0.1:7900 window."
 fi
 
 # ── 9. Open slop in Chrome Canary ────────────────────────────────────────────
@@ -270,8 +301,18 @@ fi
 # Chrome instance, breaking Chrome's same-browser AEC link that would otherwise
 # feedback the two tabs together. Canary is Chromium so its getUserMedia
 # respects the explicit BlackHole 2ch device choice (Safari does not — confirmed).
-say "Opening slop in Chrome Canary → $SLOP_URL"
-open -a "Google Chrome Canary" "$SLOP_URL"
+# Open in the Default profile explicitly — that's the "openclaw" profile that
+# holds the slop.computer mic permission + the MetaMask wallet. A plain
+# `open -a` grabs whatever Canary profile was last focused (the wrong one).
+say "Opening slop in Chrome Canary (openclaw / Default profile) → $SLOP_URL"
+CANARY_BIN="/Applications/Google Chrome Canary.app/Contents/MacOS/Google Chrome Canary"
+if [ -x "$CANARY_BIN" ]; then
+    "$CANARY_BIN" --profile-directory="Default" "$SLOP_URL" >/dev/null 2>&1 &
+    disown 2>/dev/null || true
+else
+    warn "Chrome Canary binary not found at expected path; falling back to default open."
+    open -a "Google Chrome Canary" "$SLOP_URL"
+fi
 
 # ── 10. Recap ────────────────────────────────────────────────────────────────
 cat <<EOF
