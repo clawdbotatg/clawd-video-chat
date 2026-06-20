@@ -4,6 +4,12 @@ This is the single-page UI that puts clawd on a Zoom/Meet/slop call. See
 `README.md` for the underlying architecture (wake word, WS protocol, TTS).
 These notes are for the things you can't infer from reading code.
 
+> **First time back on this project?** Read **[`INPUTS-AND-CHANNELS.md`](INPUTS-AND-CHANNELS.md)**
+> — the mental model for how clawd gets input (voice "okay clawd" = PUBLIC vs the
+> backchannel = PRIVATE) and how public/private routing actually works. One shared
+> openclaw `clawd` session, two input surfaces, two output channels. File:line
+> landmarks included.
+
 ## Quick verbs the user uses
 
 | User says… | You do |
