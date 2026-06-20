@@ -115,11 +115,14 @@ if curl -sf -m 2 "$CLAWD_URL" >/dev/null; then
 else
     say "Starting clawd server.py…"
     LOG="/tmp/clawd-server.log"
-    # Strip any inherited PORT before launching. The clawd-harness exports
-    # PORT=8787 into agent shells; server.py reads PORT from .env (7900) but
-    # os.environ.setdefault can't override an already-exported var, so a stray
-    # PORT would bind the wrong port and collide. Unsetting lets .env's 7900 win.
-    (cd "$CLAWD_DIR" && unset PORT && nohup python3 server.py >"$LOG" 2>&1 &)
+    # Strip inherited PORT and ELEVENLABS_VOICE_ID before launching. The
+    # clawd-harness loads its OWN .clawd-harness.env (PORT=8787, plus its own
+    # ELEVENLABS_VOICE_ID) into the agent process, and shells/servers spawned
+    # from an agent inherit both. server.py uses os.environ.setdefault, which
+    # CANNOT override an already-exported var — so a stray PORT binds the wrong
+    # port, and a stray ELEVENLABS_VOICE_ID shadows this project's .env voice
+    # (call ends up in the harness's voice, not clawd's). Unsetting lets .env win.
+    (cd "$CLAWD_DIR" && unset PORT ELEVENLABS_VOICE_ID && nohup python3 server.py >"$LOG" 2>&1 &)
     for _ in $(seq 1 60); do
         curl -sf -m 1 "$CLAWD_URL" >/dev/null && break
         sleep 0.5

@@ -734,7 +734,9 @@
   <div class="model-picker">
     <button data-model="bankr/claude-opus-4.8"   title="Opus 4.8 — $5/$25 per M">opus</button>
     <button data-model="bankr/claude-sonnet-4.6" title="Sonnet 4.6 — $3/$15 per M">sonnet</button>
+    <button data-model="bankr/glm-5.2"           title="GLM 5.2 — $1.40/$4.40 per M (default)">glm</button>
     <button data-model="bankr/kimi-k2.6"         title="Kimi K2.6 — $0.95/$4 per M">kimi</button>
+    <button data-model="bankr/minimax-m3"        title="MiniMax M3 — $0.60/$2.40 per M">minimax</button>
   </div>
 </div>
 
@@ -817,8 +819,10 @@
           <button class="sb-btn" type="button" id="btnSettings" title="Settings">⚙</button>
           <span id="statusDot" class="connecting" title="connecting…"></span>
           <select id="modelPicker" aria-label="Model">
+            <option value="bankr/minimax-m3">MiniMax M3 · $0.60/$2.40</option>
             <option value="bankr/minimax-m2.7">MiniMax 2.7 · $0.30/$1.20</option>
             <option value="bankr/kimi-k2.6">Kimi K2.6 · $0.95/$4</option>
+            <option value="bankr/glm-5.2">GLM 5.2 · $1.40/$4.40</option>
             <option value="bankr/claude-haiku-4.5">Haiku · $1/$5</option>
             <option value="bankr/deepseek-v4-pro">DeepSeek V4 Pro · $1.74/$3.48</option>
             <option value="bankr/claude-sonnet-4.6">Sonnet · $3/$15</option>
@@ -1141,6 +1145,8 @@ const MODEL_PRICING = {
   "bankr/claude-sonnet-4.6": { in: 3.00, out: 15.00, cacheRead: 0.30, cacheWrite: 3.75 },
   "bankr/claude-haiku-4.5":  { in: 1.00, out:  5.00, cacheRead: 0.10, cacheWrite: 1.25 },
   "bankr/kimi-k2.6":         { in: 0.95, out:  4.00, cacheRead: 0.10, cacheWrite: 1.19 },
+  "bankr/glm-5.2":           { in: 1.40, out:  4.40, cacheRead: 0.26, cacheWrite: 1.75 },
+  "bankr/minimax-m3":        { in: 0.60, out:  2.40, cacheRead: 0.12, cacheWrite: 0.75 },
   "bankr/minimax-m2.7":      { in: 0.30, out:  1.20, cacheRead: 0.03, cacheWrite: 0.38 },
   "bankr/deepseek-v4-pro":   { in: 1.74, out:  3.48, cacheRead: 0.17, cacheWrite: 2.18 },
   "anthropic/claude-opus-4-7":  { in: 15.00, out: 75.00, cacheRead: 1.50, cacheWrite: 18.75 },
@@ -1453,11 +1459,29 @@ async function fetchSessionStats({ countCost = true } = {}) {
   }
 }
 
-const DEFAULT_MODEL = "bankr/claude-sonnet-4.6";
+const DEFAULT_MODEL = "bankr/glm-5.2";
 // One-time migration: the "opus" quick-button used to be 4.7. Bump anyone whose
 // cached model is the retired 4.7 up to 4.8 so they get the latest without
 // re-clicking (and the session stops re-asserting 4.7 on the next turn).
 try { if (localStorage.getItem("clawd.model") === "bankr/claude-opus-4.7") localStorage.setItem("clawd.model", "bankr/claude-opus-4.8"); } catch (e) {}
+// One-time migration to the GLM 5.2 default: force-select it once for anyone
+// whose cache still pins an older default (e.g. kimi/sonnet), then respect any
+// manual switch afterward. Runs a single time, guarded by a flag key. Rewrites
+// BOTH the legacy clawd.model key AND each persisted tab's selectedModel (the
+// per-tab value is what the quick-button highlight actually reads).
+try {
+  if (!localStorage.getItem("clawd.model.glmDefault.v2")) {
+    localStorage.setItem("clawd.model", "bankr/glm-5.2");
+    try {
+      const tabs = JSON.parse(localStorage.getItem("clawd.tabs") || "[]");
+      if (Array.isArray(tabs)) {
+        tabs.forEach(t => { if (t) { t.selectedModel = "bankr/glm-5.2"; t.lastSentModel = null; } });
+        localStorage.setItem("clawd.tabs", JSON.stringify(tabs));
+      }
+    } catch (e) {}
+    localStorage.setItem("clawd.model.glmDefault.v2", "1");
+  }
+} catch (e) {}
 
 const state = {
   ws: null,
@@ -3864,7 +3888,7 @@ if ($diagChip) {
   }, 500);
 }
 
-// ── OBS-mode model picker (opus / sonnet / kimi) ──────────────────────────
+// ── OBS-mode model picker (opus / sonnet / glm / kimi / minimax) ──────────
 // Reuses the existing dev-mode picker plumbing: clicking a button updates
 // currentTab().selectedModel, persists to localStorage under "clawd.model",
 // and the next onSend fires ensureModelSelected which sends `/model <name>`

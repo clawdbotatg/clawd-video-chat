@@ -27,7 +27,7 @@ if [ -f "$WATCH_PIDFILE" ]; then
 fi
 
 # ── 1. Close any Chrome tabs at the clawd page ──────────────────────────────
-say "Closing Chrome tabs at $CLAWD_HOST…"
+say "Closing Chrome tabs at ${CLAWD_HOST}…"
 osascript >/dev/null 2>&1 <<APPLE || warn "Chrome AppleScript failed (Chrome not running?) — skipping."
 tell application "Google Chrome"
     repeat with w in (every window)
