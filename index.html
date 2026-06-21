@@ -402,9 +402,9 @@
   body.obs #voice-orb {
     display: block;
     position: absolute;
-    top: -5%; right: -5%;
-    width: 20%; aspect-ratio: 1;
-    min-width: 104px; max-width: 176px;
+    top: -2%; right: -2%;
+    width: 12%; aspect-ratio: 1;
+    min-width: 60px; max-width: 104px;
     pointer-events: none;
     z-index: 10001;
     --lvl: 0;
@@ -585,7 +585,6 @@
   body.hide-status #stats-chip { display: none; }
   #stats-chip .stats-row { display: flex; justify-content: space-between; gap: 12px; }
   #stats-chip .stats-model { color: var(--fg); font-weight: 600; margin-bottom: 4px; }
-  #stats-chip .stats-cost { color: var(--ok); margin-top: 4px; font-weight: 600; }
   #stats-chip .model-picker {
     margin-top: 8px;
     display: flex; gap: 4px;
@@ -613,54 +612,8 @@
     font-weight: 600;
   }
 
-  /* ── Paste-to-clawd text input (top-center) ──────────────────────────────
-     A small text input for handing clawd links, skill paths, or any prompt
-     by keyboard rather than voice. Submits via the same onSend() the wake
-     word uses, so the message goes through the normal chat path.
-     Visible in OBS mode by default; hidden alongside other status chrome
-     when ?nostatus=1 is set. */
-  #paste-box {
-    display: none;
-    position: fixed; top: 16px; left: 50%; transform: translateX(-50%);
-    background: rgba(0,0,0,0.65);
-    padding: 6px 8px; border-radius: 8px;
-    z-index: 10000;
-    align-items: flex-end; gap: 6px;
-    font-family: var(--font-mono); font-size: 12px;
-  }
-  body.obs #paste-box { display: flex; }
-  body.obs.hide-status #paste-box { display: none; }
-  #paste-box textarea {
-    width: 380px;
-    background: rgba(255,255,255,0.08);
-    border: 1px solid rgba(255,255,255,0.15);
-    color: var(--fg);
-    padding: 6px 10px;
-    font: inherit;
-    line-height: 1.4;
-    border-radius: 4px;
-    outline: none;
-    resize: none;
-    min-height: 30px;
-    max-height: 240px;
-    overflow-y: auto;
-  }
-  #paste-box textarea::placeholder { color: var(--fg3); }
-  #paste-box textarea:focus {
-    border-color: var(--accent2);
-    background: rgba(255,255,255,0.12);
-  }
-  #paste-box button {
-    background: var(--accent);
-    color: #fff;
-    border: 1px solid var(--accent);
-    padding: 6px 10px;
-    font: inherit;
-    font-weight: 600;
-    border-radius: 4px;
-    cursor: pointer;
-  }
-  #paste-box button:hover { background: var(--accent2); border-color: var(--accent2); }
+  /* (Removed) #paste-box styles — the on-screen paste/send box is gone now
+     that the backchannel handles manual text input. */
 
   /* ── Rolling transcript overlay (top-right, below stats) ──────────────
      Off by default. Toggle on with ?dev=1 or ?transcript=1. */
@@ -788,13 +741,12 @@
   <div class="verdict">first two should NOT spike the MIC bar.<br>last one SHOULD spike it (control).</div>
 </div>
 
-<!-- Stats chip — top-right in OBS mode. Surfaces model, token usage, cost
-     pulled live from incoming WS frames. Toggleable with ?nostats=1. -->
+<!-- Stats chip — top-right in OBS mode. Surfaces brain + live context-window
+     usage (claude -p, so no per-token cost line). Toggleable with ?nostats=1. -->
 <div id="stats-chip">
   <div class="stats-row stats-model">model: …</div>
   <div class="stats-row stats-turn">turn: —</div>
   <div class="stats-row stats-session">session: —</div>
-  <div class="stats-row stats-cost">~$0.00</div>
   <!-- model picker hidden: the brain is now the claude -p bridge (cc-bridge.py),
        not an openclaw/bankr model, so these per-model buttons no longer apply. -->
   <div class="model-picker" style="display:none">
@@ -809,13 +761,10 @@
 <!-- Big red toast that flashes if we ever fall back to browser TTS. -->
 <div id="fallback-toast">⚠ browser TTS fallback in use — ElevenLabs not active</div>
 
-<!-- Paste-to-clawd text input. Paste a link, skill path, or any prompt;
-     Enter submits via the same path the wake word uses. Hidden with
-     ?nostatus=1 alongside the other diagnostic chrome. -->
-<div id="paste-box">
-  <textarea id="paste-input" rows="1" placeholder="paste link, skill path, or prompt for clawd… (⇧↵ for newline)" autocomplete="off" spellcheck="false"></textarea>
-  <button type="button" id="paste-send">send</button>
-</div>
+<!-- (Removed) the paste-to-clawd text input + send button — manual keyboard
+     input is now handled by the backchannel, so the on-screen box is gone.
+     The hidden #composer textarea (#input) remains as the staging buffer the
+     voice/PTT path writes into before onSend(). -->
 
 <!-- Rolling room transcript (last ~5 min). Only visible in ?dev=1 or
      ?transcript=1 mode — clawd sees this regardless on every wake-word turn. -->
@@ -1425,8 +1374,6 @@ function renderStatsChip() {
     if (n >= 1e3) return (n / 1e3).toFixed(1) + "K";
     return String(n);
   };
-  const fmtMoney = (n) =>
-    n < 0.01 ? `~$${n.toFixed(4)}` : `~$${n.toFixed(2)}`;
   // Brain is the claude -p bridge (cc-bridge.py), not an openclaw/bankr model —
   // show that, not the stale openclaw.json model the /config endpoint reports.
   root.querySelector(".stats-model").innerHTML =
@@ -1445,16 +1392,12 @@ function renderStatsChip() {
       `<span>turn delta</span><span>+${fmt(lastDelta)}</span>`;
     root.querySelector(".stats-session").innerHTML =
       `<span>session · ${s.session.turns}t</span><span>${fmt(s.real.totalTokens)}/${fmt(s.real.contextTokens)} (${pct})</span>`;
-    root.querySelector(".stats-cost").innerHTML =
-      `<span>cost</span><span>${fmtMoney(s.real.cost)}</span>`;
   } else {
     const tag = " <span style='opacity:0.55'>est</span>";
     root.querySelector(".stats-turn").innerHTML =
       `<span>turn${tag}</span><span>↑${fmt(s.turn.in)} ↓${fmt(s.turn.out)}</span>`;
     root.querySelector(".stats-session").innerHTML =
       `<span>session · ${s.session.turns}t</span><span>↑${fmt(s.session.in)} ↓${fmt(s.session.out)}</span>`;
-    root.querySelector(".stats-cost").innerHTML =
-      `<span>est cost</span><span>${fmtMoney(s.session.cost)}</span>`;
   }
 }
 renderStatsChip();
@@ -3079,8 +3022,16 @@ document.addEventListener("keydown", (e) => {
 // ── Text-to-speech ─────────────────────────────────────────────────────────
 const $btnSpeak = document.getElementById("btnSpeak");
 let _ttsEnabled = localStorage.getItem("clawd.tts") === "1";
-let _ttsSpokenUpTo = 0;     // char count of fullText already enqueued/spoken
-let _ttsFeedRunId = null;   // runId TTS is currently chunking; offset resets when it changes (fixes backchannel turns inheriting a stale offset → clipped/mid-word speech)
+let _ttsSpokenUpTo = 0;     // char count of the current fullText already enqueued/spoken
+let _ttsSpokenText = "";    // the actual (sanitized) text already voiced this reply.
+                            // ttsFeed dedups against THIS, not a runId-scoped counter:
+                            // the cc-bridge stream can rename its runId mid-reply and
+                            // re-send the cumulative text, which used to reset the
+                            // counter to 0 and re-speak the whole turn (heard as an
+                            // echo/overlap). Comparing on the spoken prefix instead
+                            // speaks each sentence exactly once whether or not the
+                            // runId changes — and a brand-new reply (no shared prefix)
+                            // still starts from 0, so backchannel turns aren't clipped.
 let _ttsTurnFullText = "";  // latest fullText for picking chat variant
 let _ttsIdleTimer = null;
 let _ttsMode = "browser";   // "elevenlabs" | "openai" | "browser"
@@ -3141,8 +3092,8 @@ function setCaption(text) {
 function ttsReset() {
   console.log("%c[clawd] ttsReset()", "color:#e55a2b;font-weight:bold", "had audio:", !!_ttsAudio, "queue:", _ttsQueue.length, "from:", new Error().stack.split("\n").slice(1, 4).map(s => s.trim()).join(" | "));
   _ttsSpokenUpTo = 0;
+  _ttsSpokenText = "";
   _ttsChunkIndex = 0;
-  _ttsFeedRunId = null;     // next run's first delta re-detects and resets the slice offset
   _ttsTurnFullText = "";
   setCaption("");           // wipe any lingering spoken line
   _ttsTurnId++;             // invalidate every in-flight chunk
@@ -3518,21 +3469,19 @@ function _sanitizeForTts(text) {
   return out;
 }
 
+// Length of the longest common prefix of two strings (char-by-char).
+function _commonPrefixLen(a, b) {
+  const n = Math.min(a.length, b.length);
+  let i = 0;
+  while (i < n && a.charCodeAt(i) === b.charCodeAt(i)) i++;
+  return i;
+}
+
 function ttsFeed(fullText, isFinal, runId) {
   if (!_ttsEnabled) return;
-  // New streaming run? Reset the slice offset so we chunk THIS run's text from
-  // its start. Backchannel-originated runs never pass through onSend's
-  // ttsReset, so without this they inherit the PREVIOUS turn's _ttsSpokenUpTo
-  // and ttsFeed slices the spoken text from a stale char position — dropping
-  // the opening mid-word ("…oif-sp|ecs…"). Touch ONLY the slice trackers, not
-  // _ttsTurnId or ack state, so video-chat turns (offset already 0, maybe an
-  // ack in flight) are unaffected. closeAckWindow replays with no runId
-  // (undefined), so it never re-triggers this mid-turn.
-  if (runId !== undefined && runId !== _ttsFeedRunId) {
-    _ttsFeedRunId = runId;
-    _ttsSpokenUpTo = 0;
-    _ttsChunkIndex = 0;
-  }
+  // runId is no longer used to gate the slice offset — dedup is now anchored on
+  // _ttsSpokenText (see below), which is robust to the stream renaming its runId
+  // mid-reply. The param is kept because callers still pass it.
   fullText = _sanitizeForTts(fullText);
   // Hold real text while we're waiting for the ack to land. We only stash
   // the latest cumulative {fullText, isFinal} — closeAckWindow replays it.
@@ -3543,6 +3492,24 @@ function ttsFeed(fullText, isFinal, runId) {
     return;
   }
   _ttsTurnFullText = fullText;
+  // Anchor dedup on what we've ACTUALLY spoken this reply, not a char counter
+  // that a runId change can zero out. If everything voiced so far is still a
+  // prefix of this cumulative fullText, it's the SAME reply continuing → skip
+  // past it and speak only the new tail (this is what stops the final event
+  // re-speaking the whole turn). If fullText has diverged from what we spoke,
+  // it's a NEW or revised reply → start over from 0 (this preserves the old
+  // "backchannel turn must speak its opening, not inherit a stale offset" fix,
+  // since an unrelated reply shares no prefix).
+  if (fullText) {
+    const common = _commonPrefixLen(fullText, _ttsSpokenText);
+    if (_ttsSpokenText && common < _ttsSpokenText.length) {
+      _ttsSpokenText = "";       // diverged → fresh reply
+      _ttsSpokenUpTo = 0;
+      _ttsChunkIndex = 0;
+    } else {
+      _ttsSpokenUpTo = common;   // continuation → resume past the voiced prefix
+    }
+  }
   if (_ttsMode !== "browser") {
     while (true) {
       const newPart = fullText.slice(_ttsSpokenUpTo);
@@ -3550,6 +3517,7 @@ function ttsFeed(fullText, isFinal, runId) {
       if (isFinal) {
         ttsEnqueue(newPart);
         _ttsSpokenUpTo = fullText.length;
+        _ttsSpokenText = fullText;
         _ttsChunkIndex++;
         return;
       }
@@ -3558,6 +3526,7 @@ function ttsFeed(fullText, isFinal, runId) {
       if (m) {
         ttsEnqueue(m[1]);
         _ttsSpokenUpTo += m[0].length;
+        _ttsSpokenText = fullText.slice(0, _ttsSpokenUpTo);
         _ttsChunkIndex++;
         continue;            // try to drain more boundaries from same buffer
       }
@@ -3566,6 +3535,7 @@ function ttsFeed(fullText, isFinal, runId) {
         const split = cut > 40 ? cut : _TTS_MAX_CHUNK;
         ttsEnqueue(newPart.slice(0, split));
         _ttsSpokenUpTo += split;
+        _ttsSpokenText = fullText.slice(0, _ttsSpokenUpTo);
         _ttsChunkIndex++;
         continue;
       }
@@ -3592,6 +3562,7 @@ function ttsFeed(fullText, isFinal, runId) {
     const rem = newPart.trim();
     if (rem) speechSynthesis.speak(mkUtt(rem));
     _ttsSpokenUpTo = fullText.length;
+    _ttsSpokenText = fullText;
     return;
   }
   const m = newPart.match(/([\s\S]*[.!?\n])\s*/);
@@ -3599,6 +3570,7 @@ function ttsFeed(fullText, isFinal, runId) {
     const toSpeak = m[1].trim();
     if (toSpeak) speechSynthesis.speak(mkUtt(toSpeak));
     _ttsSpokenUpTo += m[0].length;
+    _ttsSpokenText = fullText.slice(0, _ttsSpokenUpTo);
   }
 }
 
@@ -3955,31 +3927,9 @@ function pttUp() {
   setTimeout(() => { _pttActive = false; submitWakeBuffer(); }, PTT_FLUSH_MS);
 }
 
-// ── Paste-to-clawd text input ────────────────────────────────────────────
-// Lets the operator hand clawd a link, skill path, or any text prompt by
-// keyboard instead of voice. Submits via the same onSend() the wake-word
-// path uses, so the message lands in the normal chat flow.
-(function wirePasteBox() {
-  const $pasteInput = document.getElementById("paste-input");
-  const $pasteSend  = document.getElementById("paste-send");
-  if (!$pasteInput || !$pasteSend) return;
-  function submit() {
-    const text = ($pasteInput.value || "").trim();
-    if (!text) return;
-    $input.value = text;
-    autosize($input);
-    setPillState("thinking", "thinking…");
-    onSend();
-    $pasteInput.value = "";
-    autosize($pasteInput);
-    $pasteInput.blur();
-  }
-  $pasteSend.addEventListener("click", submit);
-  $pasteInput.addEventListener("keydown", (e) => {
-    if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); submit(); }
-  });
-  $pasteInput.addEventListener("input", () => autosize($pasteInput));
-})();
+// (Removed) wirePasteBox() — the on-screen paste/send input is gone; manual
+// text input now comes through the backchannel. Voice/PTT still stage into the
+// hidden #composer textarea (#input) and call onSend() directly.
 
 function handleFinalChunk(rawText) {
   const text = (rawText || "").trim();
