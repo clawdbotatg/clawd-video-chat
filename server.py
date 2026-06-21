@@ -54,7 +54,14 @@ def load_dotenv(path=".env"):
             if not line or line.startswith("#") or "=" not in line:
                 continue
             key, _, val = line.partition("=")
-            os.environ.setdefault(key.strip(), val.strip())
+            # OVERRIDE, not setdefault: .env is THIS project's source of truth.
+            # The clawd-harness leaks its own env (PORT=8787, its ELEVENLABS_VOICE_ID,
+            # …) into every agent shell, so a server launched from an agent shell
+            # inherits those. With setdefault the leaked value shadowed .env and
+            # clawd ended up speaking in the harness's voice. Letting .env win makes
+            # the voice correct no matter how the server is launched (and the
+            # `unset` band-aid in slop-bridge.sh becomes redundant but harmless).
+            os.environ[key.strip()] = val.strip()
 
 
 load_dotenv()
