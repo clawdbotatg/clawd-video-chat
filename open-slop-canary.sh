@@ -1,20 +1,27 @@
 #!/bin/bash
-# open-slop-canary.sh — open a slop URL in a dedicated Chrome Canary profile with
-# the DevTools remote-debugging port ON, fully detached so an openclaw `/new`
-# (session tear-down) can't kill it.
+# open-slop-canary.sh — open a slop URL in the REAL openclaw Canary profile with
+# the DevTools remote-debugging port ON, detached so an openclaw `/new` (or a
+# claude -p session ending) can't kill it.
 #
-# Why a dedicated --user-data-dir (and not the live "Default" profile):
-#   Chrome/Canary 136+ IGNORES --remote-debugging-port when the default
-#   user-data-dir is used (a security mitigation). To let openclaw attach via
-#   CDP we point Canary at its own data dir. To avoid re-importing the wallet,
-#   that dir is SEEDED once from a copy of the real Default profile — so the
-#   MetaMask vault + slop mic permission come along. First run: just UNLOCK
-#   MetaMask with your password (no seed phrase / reimport).
+# THE openclaw profile (where the MetaMask wallet + slop login live) is openclaw's
+# own managed browser dir — NOT a profile in the standard Chrome Canary dir:
+#     user-data-dir = ~/.openclaw/browser/openclaw/user-data
+#     profile-dir    = "Profile 1"   (the MetaMask extension + vault are here)
+# (Confirmed from ~/clawd/clawd-md/metamask-slop-signin.md + the wallet's actual
+# on-disk location. The sibling ~/.openclaw/browser/canary-persist is a fresh,
+# wallet-less dir openclaw spun up on 2026-06-20.)
 #
-# How a fresh openclaw "sees" the window after /new:
-#   The debug endpoint belongs to the BROWSER process, not the openclaw session.
-#   Any new openclaw just connects to  http://127.0.0.1:9222/json  to list tabs
-#   and drive them over the DevTools Protocol — no need to re-launch anything.
+# Why no copy anymore: Chrome/Canary 136+ only ignores --remote-debugging-port on
+# the DEFAULT user-data-dir. This profile already lives in its own non-default
+# dir, so the debug port works on it DIRECTLY — we drive the real profile, with
+# no point-in-time clone to drift out of sync. (The old version seeded a copy
+# into ~/.clawd-canary-slop; that's obsolete — delete it if it's lying around.)
+#
+# How a claude -p session sees/controls it: the CDP endpoint belongs to the
+# BROWSER process, not the session. Any claude -p attaches via
+# http://127.0.0.1:9222/json → the slop tab's webSocketDebuggerUrl (see
+# cc-cdp.py, which suppresses the Origin header to clear Chrome's WS check).
+# `/new` just drops the CDP connection; Chrome stays up.
 #
 # Usage:  ./open-slop-canary.sh "https://live.slop.computer/pokernight?invite=XXXX"
 
@@ -25,31 +32,26 @@ if [ -z "$URL" ]; then
 fi
 
 CANARY="/Applications/Google Chrome Canary.app/Contents/MacOS/Google Chrome Canary"
-DEBUG_PORT=9222
-LIVE_DIR="$HOME/Library/Application Support/Google/Chrome Canary"  # real profile (read-only here)
-USER_DATA_DIR="$HOME/.clawd-canary-slop"                          # debug profile (wallet + mic live here)
+DEBUG_PORT="${CANARY_DEBUG_PORT:-9222}"
+USER_DATA_DIR="${CANARY_USER_DATA_DIR:-$HOME/.openclaw/browser/openclaw/user-data}"
+PROFILE_DIR="${CANARY_PROFILE_DIR:-Profile 1}"
 
-# Seed the debug profile once from the live Default profile (caches excluded).
-# Reads the live profile only — never modifies it.
-if [ ! -d "$USER_DATA_DIR/Default" ]; then
-    echo "first run: seeding debug profile from live Default (wallet + mic perm)…"
-    mkdir -p "$USER_DATA_DIR"
-    rsync -a \
-        --exclude 'Cache/' --exclude 'Code Cache/' --exclude 'GPUCache/' \
-        --exclude 'Service Worker/CacheStorage/' --exclude 'DawnGraphiteCache/' \
-        --exclude 'DawnWebGPUCache/' --exclude 'GraphiteDawnCache/' \
-        --exclude 'Singleton*' \
-        "$LIVE_DIR/Default" "$USER_DATA_DIR/"
-    cp "$LIVE_DIR/Local State" "$USER_DATA_DIR/Local State" 2>/dev/null || true
-    echo "seeded → unlock MetaMask with your password on first launch."
+if [ ! -d "$USER_DATA_DIR/$PROFILE_DIR" ]; then
+    echo "warning: openclaw profile not found at: $USER_DATA_DIR/$PROFILE_DIR" >&2
+    echo "         (override with CANARY_USER_DATA_DIR / CANARY_PROFILE_DIR)" >&2
 fi
 
-# nohup + & + disown = survives the openclaw session that launched it.
+# Can't run two Chrome instances on the same user-data-dir. If a Canary is
+# already up on this dir, this just opens the URL in it (debug port persists).
 nohup "$CANARY" \
     --user-data-dir="$USER_DATA_DIR" \
+    --profile-directory="$PROFILE_DIR" \
     --remote-debugging-port="$DEBUG_PORT" \
     "$URL" >/dev/null 2>&1 &
 disown
 
-echo "opened in Chrome Canary (debug profile): $URL"
-echo "CDP endpoint for openclaw: http://127.0.0.1:$DEBUG_PORT/json"
+echo "opened slop in the openclaw Canary profile:"
+echo "  user-data-dir = $USER_DATA_DIR"
+echo "  profile       = $PROFILE_DIR"
+echo "  URL           = $URL"
+echo "CDP for claude -p: http://127.0.0.1:$DEBUG_PORT/json"

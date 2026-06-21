@@ -731,7 +731,9 @@
   <div class="stats-row stats-turn">turn: —</div>
   <div class="stats-row stats-session">session: —</div>
   <div class="stats-row stats-cost">~$0.00</div>
-  <div class="model-picker">
+  <!-- model picker hidden: the brain is now the claude -p bridge (cc-bridge.py),
+       not an openclaw/bankr model, so these per-model buttons no longer apply. -->
+  <div class="model-picker" style="display:none">
     <button data-model="bankr/claude-opus-4.8"   title="Opus 4.8 — $5/$25 per M">opus</button>
     <button data-model="bankr/claude-sonnet-4.6" title="Sonnet 4.6 — $3/$15 per M">sonnet</button>
     <button data-model="bankr/glm-5.2"           title="GLM 5.2 — $1.40/$4.40 per M (default)">glm</button>
@@ -1355,9 +1357,10 @@ function renderStatsChip() {
   };
   const fmtMoney = (n) =>
     n < 0.01 ? `~$${n.toFixed(4)}` : `~$${n.toFixed(2)}`;
-  const modelDisplay = (s.model || "—").replace(/^bankr\//, "").replace(/^anthropic\//, "");
+  // Brain is the claude -p bridge (cc-bridge.py), not an openclaw/bankr model —
+  // show that, not the stale openclaw.json model the /config endpoint reports.
   root.querySelector(".stats-model").innerHTML =
-    `<span>model</span><span>${modelDisplay}</span>`;
+    `<span>brain</span><span>claude -p</span>`;
 
   // If we have real session-stats data from openclaw, show that. Otherwise
   // fall back to the char-based estimate.
@@ -3403,22 +3406,39 @@ const _TTS_SENT_RE  = /^([\s\S]*?[.!?\n])\s/;
 // Hard cap so a long unbroken stream doesn't stall forever.
 const _TTS_MAX_CHUNK = 240;
 
-// clawd-backchannel convention: assistant content wrapped in
-// [PRIVATE]...[/PRIVATE] is meant for the side channel only and must NOT
-// be spoken. Streaming-aware: a half-arrived "[PRIV" tail truncates the
-// fullText so we wait for the rest before deciding whether to TTS it. The
-// sanitized text grows monotonically with the raw stream, so _ttsSpokenUpTo
-// (which indexes into whatever we feed the chunker) stays valid.
-const _TTS_PRIVATE_BLOCK_RE = /\[PRIVATE\][\s\S]*?\[\/PRIVATE\]/g;
-const _TTS_PARTIAL_OPEN_TAILS = ["[PRIVATE", "[PRIVAT", "[PRIVA", "[PRIV", "[PRI", "[PR", "[P", "["];
+// SAFETY INVERSION (2026-06-20): default is SILENCE on the call. clawd speaks
+// out loud ONLY content it explicitly wraps in [SAY]...[/SAY]. Everything
+// outside those tags — status chatter, private replies, system notices,
+// thinking — is never spoken. Rationale: routing used to rely on the brain
+// REMEMBERING to wrap private content in [PRIVATE]; when the model regressed
+// (e.g. reset to glm-5.2) it stopped wrapping and dumped status updates onto
+// the call. Inverting the default flips the failure mode from "broadcasts to
+// the room" to "stays silent" — the only acceptable direction.
+//
+// Streaming-aware: complete [SAY]...[/SAY] blocks are spoken in order; an
+// open-but-unclosed block speaks its arrived text but trims any half-arrived
+// closing/opening tag tail so a partial tag never leaks. The extracted text
+// grows monotonically with the raw stream, so _ttsSpokenUpTo stays valid.
+const _TTS_PUBLIC_BLOCK_RE = /\[SAY\]([\s\S]*?)\[\/SAY\]/g;
+const _TTS_CLOSE_PARTIAL_TAILS = ["[/SAY", "[/SA", "[/S", "[/", "["];
 function _sanitizeForTts(text) {
-  text = text.replace(_TTS_PRIVATE_BLOCK_RE, "");
-  const openIdx = text.indexOf("[PRIVATE]");
-  if (openIdx !== -1) return text.slice(0, openIdx);
-  for (const p of _TTS_PARTIAL_OPEN_TAILS) {
-    if (text.endsWith(p)) return text.slice(0, text.length - p.length);
+  let out = "";
+  let m;
+  _TTS_PUBLIC_BLOCK_RE.lastIndex = 0;
+  while ((m = _TTS_PUBLIC_BLOCK_RE.exec(text)) !== null) {
+    out += (out ? " " : "") + m[1];
   }
-  return text;
+  // A public block that's still open mid-stream: speak what's arrived inside it.
+  const lastOpen = text.lastIndexOf("[SAY]");
+  const lastClose = text.lastIndexOf("[/SAY]");
+  if (lastOpen !== -1 && lastOpen > lastClose) {
+    let pending = text.slice(lastOpen + "[SAY]".length);
+    for (const p of _TTS_CLOSE_PARTIAL_TAILS) {
+      if (pending.endsWith(p)) { pending = pending.slice(0, pending.length - p.length); break; }
+    }
+    out += (out ? " " : "") + pending;
+  }
+  return out;
 }
 
 function ttsFeed(fullText, isFinal, runId) {
