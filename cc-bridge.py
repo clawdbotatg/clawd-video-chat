@@ -4,40 +4,36 @@
 The clawd-video-chat page (index.html) is a generic gateway WS client: it sends
 RPC `{type:"req",id,method,params}` and consumes streaming `chat` events. This
 bridge speaks that exact wire protocol but runs **Claude Code** (`claude -p`) as
-the brain instead of the openclaw `clawd` agent. Point the page's WebSocket URL
-at this bridge and the call is driven by Claude Code — no openclaw, no gateway,
-no backchannel proxy.
+the brain instead of the openclaw `clawd` agent.
 
-  page  ──WS RPC──►  cc-bridge.py  ──spawn──►  claude -p (stream-json)
-        ◄─chat evt─                ◄─stdout──
+  voice page (:7900) ─┐
+                      ├─WS──►  cc-bridge.py  ──spawn──►  claude -p (stream-json)
+  backchannel (:7851)─┘            │ broadcasts chat events to ALL clients
 
-Why this shape (decided with Austin): keep the page as clawd's mouth/ears (voice
-"okay clawd" + backchannel in, TTS out with the [SAY] safety inversion already
-in index.html). Replace ONLY the thing behind its socket.
+KEY behaviors (learned the hard way):
+- BROADCAST: chat events fan out to ALL connected sockets, like the openclaw
+  gateway did. Without this, a backchannel-initiated [SAY] never reaches the
+  VOICE page's mouth (the voice page is what does TTS), so nothing is spoken.
+- VOICE vs PRIVATE: a backchannel message arrives prefixed "[PRIVATE]"; a voice
+  ("okay clawd…") turn arrives as plain text. Voice turns are PUBLIC — the whole
+  reply must be SPOKEN, so we wrap it in [SAY]…[/SAY] for the page's TTS gate.
+  Backchannel turns are PRIVATE — silent unless the brain itself emits [SAY]
+  (which it does when Austin says "say it out loud").
+- The brain runs with cwd = an EMPOWERING workspace (~/.clawd-call-brain) whose
+  CLAUDE.md tells clawd the wallet/poker actions ARE his. Do NOT point cwd at the
+  harness operator notes — their "wallet is not yours" rule neuters the brain.
 
-PROTOCOL (reverse-engineered from index.html):
-  on connect            → emit  {type:"event", event:"proxy.ready"}
-  req sessions.patch    → res ok {}                         (no-op ack)
-  req chat.history      → res ok {messages:[{role,content:[{type:"text",text}]}]}
-  req chat.send {message,sessionKey} → res ok {runId}; then stream:
-        event chat {runId,sessionKey,state:"delta", message:{content:[{type:"text",text:<cumulative>}]}}  (repeated)
-        event chat {runId,sessionKey,state:"final", message:{content:[{type:"text",text:<full>}]}}
-  req chat.abort {sessionKey,runId}  → kill the run, res ok {}
-  req sessions.reset {key}           → forget claude session id for key (stateless call turn), res ok {}
+PROTOCOL: on connect → connect.challenge + proxy.ready (satisfies both the direct
+voice page and the backchannel proxy's gateway handshake). RPC: sessions.patch
+(ack), chat.history, chat.send → {runId} then streaming chat deltas/final,
+chat.abort, sessions.reset.
 
-CONTINUITY: each sessionKey maps to a claude --resume <session_id>. sessions.reset
-drops the mapping so the next turn starts fresh (matches the page's stateless
-voice-turn behavior). Typed/backchannel turns keep continuity.
-
-SAFETY: the page already speaks ONLY text wrapped in [SAY]...[/SAY]. We also tell
-claude that convention via the system prompt, so public speech is opt-in at BOTH
-layers — a misbehaving brain stays silent rather than broadcasting.
-
-Run:  CC_BRIDGE_MODEL=sonnet python3 cc-bridge.py   (then set the page's WS URL to ws://127.0.0.1:7861)
+Run:  CC_BRIDGE_MODEL=opus python3 cc-bridge.py
 """
 import asyncio
 import json
 import os
+import time
 import uuid
 
 import websockets
@@ -45,37 +41,50 @@ import websockets
 PORT = int(os.environ.get("CC_BRIDGE_PORT", "7861"))
 HOST = os.environ.get("CC_BRIDGE_HOST", "127.0.0.1")
 MODEL = os.environ.get("CC_BRIDGE_MODEL", "")  # empty → claude's configured default
-CWD = os.environ.get("CC_BRIDGE_CWD", os.path.dirname(os.path.abspath(__file__)))
+CWD = os.environ.get("CC_BRIDGE_CWD", os.path.expanduser("~/.clawd-call-brain"))
 
-# The channel convention, mirrored into the brain. The page enforces it too.
-CHANNEL_RULES = (
-    "You are clawd, the voice on a live call (slop.computer). You speak to two "
-    "audiences. DEFAULT TO SILENCE on the call: anything you write is PRIVATE to "
-    "Austin (he reads it; the room does NOT hear it) UNLESS you wrap it in "
-    "[SAY]...[/SAY]. Only text inside [SAY] tags is spoken aloud to the room. "
-    "So: speak aloud ONLY when asked to (\"say it out loud\", \"tell the room\", "
-    "\"introduce yourself on the call\") — then put exactly those words inside "
-    "[SAY]...[/SAY]. Status updates, acknowledgements, and answers to private "
-    "questions stay unwrapped (silent). Never wrap something in [SAY] unless you "
-    "mean for everyone on the call to hear it. Keep spoken lines short and warm."
+# Per-turn system guidance, on top of the workspace CLAUDE.md persona.
+VOICE_SYS = (
+    "The user just SPOKE to you on the live call. Whatever TEXT you output will be "
+    "spoken aloud to the room, so reply with ONLY the brief words to say — warm, "
+    "conversational, in character. No preamble, no 'let me think', no stage "
+    "directions, no markdown. Use tools to actually do what's asked (wallet, "
+    "poker, the slop browser), but keep your spoken text short."
 )
+PRIVATE_SYS = (
+    "This message is PRIVATE — from Austin's backchannel, NOT heard by the room. "
+    "Reply privately by default; it will NOT be spoken. Speak on the call ONLY if "
+    "told to ('say it', 'out loud', 'tell the room'): wrap EXACTLY the words for "
+    "the room in [SAY]...[/SAY]. Use tools freely (shell, wallet, slop browser)."
+)
+PRIVATE_PREFIX = "[PRIVATE]"
 
-# Scrub these so the child claude runs on the subscription (OAuth), not metered
-# API, and isn't confused into embedded mode (same rule as the harness SCRUB_ENV).
 SCRUB_PREFIXES = ("CLAUDE_CODE", "ANTHROPIC_API")
 SCRUB_EXACT = {"CLAUDECODE", "ANTHROPIC_API_KEY"}
 
 
 def child_env():
-    env = {k: v for k, v in os.environ.items()
-           if k not in SCRUB_EXACT and not k.startswith(SCRUB_PREFIXES)}
-    return env
+    return {k: v for k, v in os.environ.items()
+            if k not in SCRUB_EXACT and not k.startswith(SCRUB_PREFIXES)}
 
 
-# Per-sessionKey state: claude session id (for --resume) and a transcript for chat.history.
-sessions = {}   # sessionKey -> {"sid": str|None, "history": [ {role, content:[...]} ]}
-# Running claude subprocesses by runId, so chat.abort can kill them.
-runs = {}       # runId -> asyncio.subprocess.Process
+# Full observability: every input (voice/backchannel) and every reply is logged
+# here so the conversation can be watched/debugged with `tail -f`.
+CONVO_LOG = os.environ.get("CC_BRIDGE_CONVO_LOG", "/tmp/cc-bridge-convo.log")
+
+
+def convo_log(kind, channel, session_key, text):
+    try:
+        with open(CONVO_LOG, "a", encoding="utf-8") as f:
+            f.write(f"\n[{time.strftime('%H:%M:%S')}] {kind} ({channel}) {session_key}\n"
+                    f"  {text.strip()}\n")
+    except Exception:
+        pass
+
+
+sessions = {}          # sessionKey -> {"sid": str|None, "history": [...]}
+runs = {}              # runId -> asyncio.subprocess.Process
+clients = set()        # all connected browser/proxy sockets
 
 
 def sess(key):
@@ -86,22 +95,39 @@ async def send_frame(ws, obj):
     await ws.send(json.dumps(obj))
 
 
-async def emit_chat(ws, run_id, session_key, state, text):
-    await send_frame(ws, {
+async def broadcast_chat(run_id, session_key, state, text):
+    """Fan a chat event out to EVERY connected client (voice page + backchannel)."""
+    data = json.dumps({
         "type": "event", "event": "chat",
         "payload": {
             "runId": run_id, "sessionKey": session_key, "state": state,
             "message": {"role": "assistant", "content": [{"type": "text", "text": text}]},
         },
     })
+    for c in list(clients):
+        try:
+            await c.send(data)
+        except Exception:
+            clients.discard(c)
 
 
-async def run_claude(ws, session_key, run_id, prompt):
-    """Spawn claude -p, stream its output back as cumulative chat deltas, end with final."""
+def say_wrap(text, final):
+    """Voice turns: wrap the reply so the page's [SAY]-only TTS speaks it.
+    Streaming-aware — an open [SAY] (no close yet) makes the page speak arrived
+    text incrementally; the close lands on the final frame."""
+    t = text.replace("[SAY]", "").replace("[/SAY]", "")
+    return f"[SAY]{t}[/SAY]" if final else f"[SAY]{t}"
+
+
+async def run_claude(session_key, run_id, prompt, public):
+    """Spawn claude -p, stream output as cumulative chat deltas (broadcast), end final."""
     s = sess(session_key)
+    sys_prompt = VOICE_SYS if public else PRIVATE_SYS
     cmd = ["claude", "-p", "--output-format", "stream-json",
            "--include-partial-messages", "--verbose",
-           "--append-system-prompt", CHANNEL_RULES]
+           "--add-dir", os.path.expanduser("~/clawd/clawd-md"),
+           "--add-dir", os.path.expanduser("~/clawd/clawd-chronicle"),
+           "--append-system-prompt", sys_prompt]
     if MODEL:
         cmd += ["--model", MODEL]
     if s["sid"]:
@@ -118,7 +144,23 @@ async def run_claude(ws, session_key, run_id, prompt):
     await proc.stdin.drain()
     proc.stdin.close()
 
+    # Drain stderr concurrently so a failing claude -p surfaces (and can't
+    # deadlock by filling the stderr pipe while we're reading stdout).
+    stderr_buf = []
+    async def _drain_stderr():
+        try:
+            async for ln in proc.stderr:
+                stderr_buf.append(ln.decode(errors="replace"))
+        except Exception:
+            pass
+    stderr_task = asyncio.create_task(_drain_stderr())
+
     text = ""
+
+    async def emit(state):
+        await broadcast_chat(run_id, session_key, state,
+                             say_wrap(text, state == "final") if public else text)
+
     try:
         async for raw in proc.stdout:
             line = raw.decode(errors="replace").strip()
@@ -133,20 +175,18 @@ async def run_claude(ws, session_key, run_id, prompt):
                 if evt.get("session_id"):
                     s["sid"] = evt["session_id"]
             elif etype == "stream_event":
-                # token-level deltas: content_block_delta -> text_delta
                 inner = evt.get("event", {})
                 if inner.get("type") == "content_block_delta":
                     delta = inner.get("delta", {})
                     if delta.get("type") == "text_delta" and delta.get("text"):
                         text += delta["text"]
-                        await emit_chat(ws, run_id, session_key, "delta", text)
+                        await emit("delta")
             elif etype == "assistant":
-                # Full assistant message; reconcile in case partials were missed.
                 blocks = (evt.get("message") or {}).get("content") or []
                 full = "".join(b.get("text", "") for b in blocks if b.get("type") == "text")
                 if len(full) > len(text):
                     text = full
-                    await emit_chat(ws, run_id, session_key, "delta", text)
+                    await emit("delta")
             elif etype == "result":
                 if evt.get("session_id"):
                     s["sid"] = evt["session_id"]
@@ -156,9 +196,24 @@ async def run_claude(ws, session_key, run_id, prompt):
     finally:
         runs.pop(run_id, None)
 
+    try:
+        await asyncio.wait_for(stderr_task, timeout=2)
+    except Exception:
+        pass
+    rc = proc.returncode
+    err = "".join(stderr_buf).strip()
+    # Surface failures: a non-zero exit, or an empty reply — the classic "clawd
+    # mysteriously went silent on the call" case. Logged so it's debuggable
+    # instead of a silent dead-air mystery.
+    if (rc not in (0, None)) or not text.strip():
+        convo_log("ERR", "voice" if public else "priv", session_key,
+                  f"claude exit={rc}, reply_empty={not text.strip()}; "
+                  f"stderr: {err[-600:] or '(none)'}")
+
     s["history"].append({"role": "user", "content": [{"type": "text", "text": prompt}]})
     s["history"].append({"role": "assistant", "content": [{"type": "text", "text": text}]})
-    await emit_chat(ws, run_id, session_key, "final", text)
+    convo_log("OUT", "voice" if public else "priv", session_key, text or "(empty)")
+    await emit("final")
 
 
 async def handle_req(ws, frame):
@@ -176,7 +231,7 @@ async def handle_req(ws, frame):
         limit = params.get("limit") or 100
         await ok({"messages": s["history"][-limit:]})
     elif method == "sessions.reset":
-        sess(params.get("key", ""))["sid"] = None   # forget continuity; keep transcript
+        sess(params.get("key", ""))["sid"] = None
         await ok({})
     elif method == "chat.abort":
         proc = runs.get(params.get("runId"))
@@ -190,26 +245,35 @@ async def handle_req(ws, frame):
         run_id = "run-" + uuid.uuid4().hex[:12]
         await ok({"runId": run_id})
         if message.strip().startswith("/"):
-            # Slash control (e.g. /model) — not a prompt for the brain. Silent ack.
-            await emit_chat(ws, run_id, session_key, "final", "")
+            await broadcast_chat(run_id, session_key, "final", "")  # slash control: silent
         else:
-            asyncio.create_task(run_claude(ws, session_key, run_id, message))
+            # Voice turns arrive plain (PUBLIC → speak). Backchannel turns are
+            # prefixed "[PRIVATE]" (PRIVATE → silent unless the brain emits [SAY]).
+            public = not message.lstrip().startswith(PRIVATE_PREFIX)
+            convo_log("IN ", "voice" if public else "priv", session_key, message)
+            asyncio.create_task(run_claude(session_key, run_id, message, public))
     else:
-        # Unknown method: ack empty so the page's RPC promise resolves.
         await ok({})
 
 
 async def handler(ws):
-    # The page waits for proxy.ready before sending any RPC (it expects the
-    # backchannel proxy to have finished the gateway handshake server-side).
+    # Emit connect.challenge FIRST (the backchannel proxy's gateway handshake reads
+    # it), then proxy.ready (the direct voice page acts on it; the proxy swallows
+    # it during its handshake loops). See PROTOCOL note up top.
+    await send_frame(ws, {"type": "event", "event": "connect.challenge",
+                          "payload": {"nonce": uuid.uuid4().hex}})
     await send_frame(ws, {"type": "event", "event": "proxy.ready"})
-    async for raw in ws:
-        try:
-            frame = json.loads(raw)
-        except json.JSONDecodeError:
-            continue
-        if frame.get("type") == "req":
-            asyncio.create_task(handle_req(ws, frame))
+    clients.add(ws)
+    try:
+        async for raw in ws:
+            try:
+                frame = json.loads(raw)
+            except json.JSONDecodeError:
+                continue
+            if frame.get("type") == "req":
+                asyncio.create_task(handle_req(ws, frame))
+    finally:
+        clients.discard(ws)
 
 
 async def main():
