@@ -13,9 +13,11 @@ No pip deps, stdlib only.
 import json
 import os
 import queue
+import re
 import subprocess
 import sys
 import threading
+import time
 import urllib.error
 import urllib.request
 from http.server import BaseHTTPRequestHandler
@@ -67,6 +69,36 @@ def load_dotenv(path=".env"):
 load_dotenv()
 
 
+# ── STT log ────────────────────────────────────────────────────────────────────
+# The page POSTs every NON-echo finalized speech-recognition chunk it hears in
+# the room to /api/stt-log, and a marker each time an "okay clawd" wake turn
+# fires. We append it as JSONL here. This is the FULL room transcript — far more
+# than what any single wake turn sends the brain (a wake turn only forwards the
+# short wake-window utterance). The clawd -p brain is told about this file in its
+# soul (~/.clawd-call-brain/CLAUDE.md) and can Read it to recall the whole call.
+# Default lives inside the brain's cwd so it's readable without a permission prompt.
+STT_LOG_PATH = os.path.expanduser(
+    os.environ.get("STT_LOG_PATH", "~/.clawd-call-brain/stt-log.jsonl"))
+
+
+def load_stt_rows():
+    """Parse the JSONL STT log into a list of dicts (oldest-first). Bad lines skipped."""
+    rows = []
+    try:
+        with open(STT_LOG_PATH, encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    rows.append(json.loads(line))
+                except Exception:
+                    pass
+    except FileNotFoundError:
+        pass
+    return rows
+
+
 # ── Load gateway config from ~/.openclaw/openclaw.json ───────────────────────
 def load_openclaw_config():
     path = Path(os.path.expanduser("~/.openclaw/openclaw.json"))
@@ -104,6 +136,15 @@ def resolve_agent_model(cfg, session_key):
         if a.get("default"):
             return a.get("model")
     return None
+
+
+def context_window_for(model):
+    """Context-window size (tokens) for a claude model id. Defaults to the
+    standard 200k; the 1M-context beta tiers would override here if enabled."""
+    m = (model or "").lower()
+    if "[1m]" in m or "-1m" in m:
+        return 1_000_000
+    return 200_000
 
 
 def resolve_gateway_settings():
@@ -296,6 +337,10 @@ class Handler(BaseHTTPRequestHandler):
             self.handle_filler()
         elif path == "/api/tts":
             self.handle_tts()
+        elif path == "/api/stt-log":
+            self.handle_stt_log()
+        elif path == "/api/ask-transcript":
+            self.handle_ask_transcript()
         elif path == "/trigger-mic":
             length = int(self.headers.get("Content-Length", 0))
             self.rfile.read(length)
@@ -328,8 +373,157 @@ class Handler(BaseHTTPRequestHandler):
             self.send_header("Content-Type", "application/json")
             self.end_headers()
             self.wfile.write(b'{"ok":true}')
+        elif path in ("/trigger-ptt-down", "/trigger-ptt-up"):
+            # PUSH-TO-TALK from the backchannel (:7850). Holding the button POSTs
+            # ptt-down (start capturing speech, no wake word); releasing it POSTs
+            # ptt-up (stop + submit immediately, no trailing-silence wait). A
+            # perfectly-timed press/release replaces the "okay clawd" + silence-
+            # gap dance. Cross-origin no-cors POST, so mirror /trigger-stop's CORS.
+            try:
+                length = int(self.headers.get("Content-Length", 0))
+                if length:
+                    self.rfile.read(length)
+            except Exception:
+                pass
+            push_event("ptt-down" if path.endswith("down") else "ptt-up")
+            self.send_response(200)
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(b'{"ok":true}')
         else:
             self.send_error(404)
+
+    def handle_stt_log(self):
+        """Append one heard utterance — or a wake-turn marker — to STT_LOG_PATH.
+
+        Body is either {"text": "<heard speech>"} for ambient room transcript,
+        or {"wake": true, "sent": "<prompt forwarded to clawd>"} for the marker
+        written when an "okay clawd" turn fires. Fire-and-forget from the page;
+        we never let a logging failure break the call, so errors are swallowed
+        into a 500 the client ignores.
+        """
+        try:
+            length = int(self.headers.get("Content-Length", 0))
+            body = json.loads(self.rfile.read(length) or b"{}")
+        except Exception:
+            body = {}
+        rec = {"ts": int(time.time() * 1000), "t": time.strftime("%Y-%m-%d %H:%M:%S")}
+        if body.get("wake"):
+            rec["wake"] = True
+            rec["sent"] = (body.get("sent") or "").strip()
+        else:
+            text = (body.get("text") or "").strip()
+            if not text:
+                self.send_json({"ok": True, "skipped": True})
+                return
+            rec["text"] = text
+        try:
+            os.makedirs(os.path.dirname(STT_LOG_PATH), exist_ok=True)
+            with open(STT_LOG_PATH, "a", encoding="utf-8") as f:
+                f.write(json.dumps(rec, ensure_ascii=False) + "\n")
+        except Exception as e:
+            self.send_json({"ok": False, "error": str(e)}, status=500)
+            return
+        self.send_json({"ok": True})
+
+    def handle_ask_transcript(self):
+        """Answer a natural-language question about the room transcript via a
+        cheap Bankr LLM call (Haiku by default).
+
+        Semantic counterpart to `stt grep`: the page logs everything heard to
+        STT_LOG_PATH; this loads the most-recent slice, hands it to a small fast
+        model, and returns a one-line answer grounded ONLY in the transcript.
+        Lets the (expensive) clawd brain ask "what is the magic number?" and get
+        a crisp answer without reading the whole log into its own context.
+
+        Body: {"q": str, "since"?: seconds, "limit"?: max recent lines,
+               "model"?: bankr model id}. Returns {answer, model, lines}.
+        """
+        bankr_key = os.environ.get("BANKR_LLM_KEY", "")
+        if not bankr_key:
+            self.send_json({"error": "no bankr key"}, status=503)
+            return
+        try:
+            length = int(self.headers.get("Content-Length", 0))
+            body = json.loads(self.rfile.read(length) or b"{}")
+        except Exception:
+            body = {}
+        question = (body.get("q") or body.get("question") or "").strip()
+        if not question:
+            self.send_json({"error": "missing question (q)"}, status=400)
+            return
+        model = (body.get("model") or "claude-haiku-4.5").strip()
+
+        rows = load_stt_rows()
+        # Optional recency window, then a hard cap on lines so the prompt stays
+        # cheap. Most-recent-first selection, re-sorted oldest→newest for reading.
+        since = body.get("since")
+        if since:
+            try:
+                cutoff = time.time() * 1000 - float(since) * 1000
+                rows = [r for r in rows if r.get("ts", 0) >= cutoff]
+            except Exception:
+                pass
+        try:
+            limit = int(body.get("limit") or 800)
+        except Exception:
+            limit = 800
+        rows = rows[-limit:]
+        if not rows:
+            self.send_json({"answer": "Nothing's been heard on the call yet.",
+                            "model": model, "lines": 0})
+            return
+
+        def line(r):
+            t = (r.get("t", "") or "")[-8:]
+            if r.get("wake"):
+                return f"[{t}] (clawd was asked) {r.get('sent','')}"
+            return f"[{t}] {r.get('text','')}"
+        # Build newest-first under a char budget, then flip to chronological.
+        budget, picked = 60000, []
+        for r in reversed(rows):
+            s = line(r)
+            if budget - len(s) < 0:
+                break
+            picked.append(s)
+            budget -= len(s) + 1
+        transcript = "\n".join(reversed(picked))
+
+        system = (
+            "You answer questions about the transcript of a live audio/video "
+            "call. The transcript is mic-derived speech-to-text and MAY contain "
+            "mishearings, homophones, and dropped words — allow for that. Answer "
+            "ONLY from what the transcript actually contains. Be very brief: a "
+            "word or one short sentence, as if speaking it aloud. If the answer "
+            "isn't in the transcript, say you didn't catch it — do NOT guess or "
+            "use outside knowledge. Lines marked '(clawd was asked)' are prior "
+            "questions put to clawd, for context."
+        )
+        user_msg = f"Transcript (most recent at the bottom):\n{transcript}\n\nQuestion: {question}"
+        try:
+            req_body = json.dumps({
+                "model": model,
+                "max_tokens": 400,
+                "messages": [
+                    {"role": "system", "content": system},
+                    {"role": "user", "content": user_msg},
+                ],
+            }).encode()
+            req = urllib.request.Request(
+                "https://llm.bankr.bot/v1/chat/completions",
+                data=req_body,
+                headers={"Content-Type": "application/json", "X-API-Key": bankr_key},
+                method="POST",
+            )
+            with urllib.request.urlopen(req, timeout=30) as resp:
+                data = json.loads(resp.read())
+            raw = data["choices"][0]["message"]["content"]
+            import re
+            answer = re.sub(r"<think>.*?</think>", "", raw, flags=re.DOTALL).strip()
+            self.send_json({"answer": answer, "model": model, "lines": len(picked)})
+        except Exception as e:
+            self.send_json({"error": str(e)}, status=500)
 
     def handle_autotitle(self):
         bankr_key = os.environ.get("BANKR_LLM_KEY", "")
@@ -509,51 +703,70 @@ class Handler(BaseHTTPRequestHandler):
             self.send_json({"error": str(e)}, status=500)
 
     def handle_session_stats(self):
-        """Shell out to `openclaw sessions --json` to read the real token
-        count for the active session. Returns the matching session's data
-        so the chip can show actual numbers instead of char-based estimates."""
-        cfg = load_openclaw_config()
-        session_key = os.environ.get("OPENCLAW_SESSION_KEY") or "agent:clawd:main"
-        parts = session_key.split(":")
-        if len(parts) < 2 or parts[0] != "agent":
-            self.send_json({"error": f"bad sessionKey: {session_key}"}, status=400)
+        """Report the LIVE claude -p brain session's real context usage.
+
+        The brain is now the claude -p cc-bridge (not openclaw), so the old
+        `openclaw sessions --json` store is frozen — it always read back the
+        same stale ~9.5k/200k. Instead we read the active claude transcript
+        JSONL for the brain's cwd and sum the last assistant turn's usage
+        (input + cache_read + cache_creation = tokens currently sitting in
+        the model's context window). That's the number that actually moves
+        toward compaction, so it's the one worth showing on the chip."""
+        # The brain's cwd — same default cc-bridge.py uses (~/.clawd-call-brain).
+        cwd = os.environ.get("CC_BRIDGE_CWD") or os.path.expanduser("~/.clawd-call-brain")
+        cwd = os.path.realpath(cwd)
+        # claude names a project dir by replacing every non-alphanumeric char
+        # in the abspath with '-' (e.g. /Users/x/.clawd-call-brain →
+        # -Users-x--clawd-call-brain).
+        slug = re.sub(r"[^a-zA-Z0-9]", "-", cwd)
+        proj = Path.home() / ".claude" / "projects" / slug
+        files = sorted(proj.glob("*.jsonl"), key=lambda p: p.stat().st_mtime,
+                       reverse=True) if proj.exists() else []
+        if not files:
+            self.send_json({"sessionKey": "claude-p:brain", "exists": False, "tokens": 0})
             return
-        agent_id = parts[1]
-        store = Path.home() / ".openclaw" / "agents" / agent_id / "sessions" / "sessions.json"
-        if not store.exists():
-            self.send_json({"sessionKey": session_key, "exists": False, "tokens": 0})
-            return
+        jsonl = files[0]   # newest = the active resumed session
+        last_usage = None
+        model = None
         try:
-            r = subprocess.run(
-                ["openclaw", "sessions", "--store", str(store), "--json"],
-                capture_output=True, text=True, timeout=10,
-            )
-            if r.returncode != 0:
-                self.send_json({"error": "openclaw cli failed",
-                                "stderr": (r.stderr or "")[:500]}, status=502)
-                return
-            data = json.loads(r.stdout or "{}")
-            sessions = data.get("sessions", [])
-            match = next((s for s in sessions if s.get("key") == session_key), None)
-            if not match:
-                self.send_json({"sessionKey": session_key, "exists": False, "tokens": 0})
-                return
-            self.send_json({
-                "sessionKey": session_key,
-                "exists": True,
-                "sessionId": match.get("sessionId"),
-                "model": match.get("model"),
-                "tokens": match.get("totalTokens"),       # may be null if no chat yet
-                "tokensFresh": match.get("totalTokensFresh", False),
-                "contextTokens": match.get("contextTokens"),
-                "updatedAt": match.get("updatedAt"),
-                "ageMs": match.get("ageMs"),
-                "kind": match.get("kind"),
-            })
-        except subprocess.TimeoutExpired:
-            self.send_json({"error": "openclaw cli timeout"}, status=504)
-        except Exception as e:
-            self.send_json({"error": str(e)}, status=500)
+            with open(jsonl, "r") as fh:
+                for line in fh:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        e = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    # Skip Task-subagent turns — their usage is a *separate*
+                    # context, not the main thread's.
+                    if e.get("isSidechain"):
+                        continue
+                    msg = e.get("message") or {}
+                    if msg.get("role") == "assistant" and isinstance(msg.get("usage"), dict):
+                        last_usage = msg["usage"]
+                        model = msg.get("model") or model
+        except Exception as ex:
+            self.send_json({"error": str(ex)}, status=500)
+            return
+        if not last_usage:
+            self.send_json({"sessionKey": "claude-p:brain", "exists": True,
+                            "tokens": 0, "sessionId": jsonl.stem, "model": model})
+            return
+        ctx = (int(last_usage.get("input_tokens", 0) or 0)
+               + int(last_usage.get("cache_read_input_tokens", 0) or 0)
+               + int(last_usage.get("cache_creation_input_tokens", 0) or 0))
+        self.send_json({
+            "sessionKey": "claude-p:brain",
+            "exists": True,
+            "sessionId": jsonl.stem,
+            "model": model,
+            "tokens": ctx,                              # live context-window occupancy
+            "tokensFresh": True,
+            "contextTokens": context_window_for(model),
+            "updatedAt": int(jsonl.stat().st_mtime * 1000),
+            "kind": "claude-p",
+        })
 
     def handle_tts(self):
         try:

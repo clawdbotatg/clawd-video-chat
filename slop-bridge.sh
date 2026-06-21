@@ -299,22 +299,30 @@ else
     • Or in OBS: double-click the screen-capture source → pick the 127.0.0.1:7900 window."
 fi
 
-# ── 9. Open slop in Chrome Canary ────────────────────────────────────────────
-# Chrome Canary (not stable Chrome) so it's a separate app/process from clawd's
-# Chrome instance, breaking Chrome's same-browser AEC link that would otherwise
-# feedback the two tabs together. Canary is Chromium so its getUserMedia
-# respects the explicit BlackHole 2ch device choice (Safari does not — confirmed).
-# Open in the Default profile explicitly — that's the "openclaw" profile that
-# holds the slop.computer mic permission + the MetaMask wallet. A plain
-# `open -a` grabs whatever Canary profile was last focused (the wrong one).
-say "Opening slop in Chrome Canary (openclaw / Default profile) → $SLOP_URL"
-CANARY_BIN="/Applications/Google Chrome Canary.app/Contents/MacOS/Google Chrome Canary"
-if [ -x "$CANARY_BIN" ]; then
-    "$CANARY_BIN" --profile-directory="Default" "$SLOP_URL" >/dev/null 2>&1 &
-    disown 2>/dev/null || true
+# ── 9. Open the backchannel control page in Chrome ───────────────────────────
+# (Was: open https://live.slop.computer/ in Chrome Canary. We now open the
+#  clawd-backchannel page instead — the same *public LAN* URL you'd use to talk
+#  to clawd from another machine — in stable Chrome.)
+#
+# The URL is built at runtime, not hardcoded: the Mac's LAN IP is DHCP and drifts
+# (was .56 → .75 → .56), and the token lives in clawd-backchannel/.env. So we
+# read both fresh each run: http://<lan-ip>:7850/?k=<BACKCHANNEL_TOKEN>.
+BACKCHANNEL_ENV="$HOME/clawd/clawd-backchannel/.env"
+BACKCHANNEL_PORT="7850"
+LAN_IP="$(ipconfig getifaddr en0 2>/dev/null || true)"
+BC_TOKEN=""
+if [ -f "$BACKCHANNEL_ENV" ]; then
+    BC_TOKEN="$(grep -E '^BACKCHANNEL_TOKEN=' "$BACKCHANNEL_ENV" | head -1 | cut -d= -f2- || true)"
+fi
+if [ -n "$LAN_IP" ] && [ -n "$BC_TOKEN" ]; then
+    BACKCHANNEL_URL="http://${LAN_IP}:${BACKCHANNEL_PORT}/?k=${BC_TOKEN}"
+    say "Opening backchannel (public LAN URL) in Chrome → $BACKCHANNEL_URL"
+    open -a "Google Chrome" "$BACKCHANNEL_URL"
 else
-    warn "Chrome Canary binary not found at expected path; falling back to default open."
-    open -a "Google Chrome Canary" "$SLOP_URL"
+    warn "Couldn't build the backchannel URL.
+    • LAN IP (ipconfig getifaddr en0): '${LAN_IP:-<empty>}'
+    • token from $BACKCHANNEL_ENV: $([ -n "$BC_TOKEN" ] && echo found || echo MISSING)
+    Open it manually once both are available."
 fi
 
 # ── 10. Recap ────────────────────────────────────────────────────────────────

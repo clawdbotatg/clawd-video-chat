@@ -390,6 +390,70 @@
   body.obs #status-pill.error     .dot { background: var(--bad); }
   body.obs.hide-status #status-pill { opacity: 0; }
 
+  /* ── Voice orb — big pulsating sphere over the TOP-RIGHT of the avatar.
+     Far more visible than the bottom status pill: a glowing sphere that
+     (a) tracks your voice in real time (scales + brightens with mic level)
+     and (b) recolors by listener state. Sits in the top-right corner —
+     clear of the slop name badge, which lands bottom-left. Only in OBS mode;
+     hidden with ?nostatus=1 alongside the rest of the chrome.
+     --lvl = live voice level 0..1, written each frame from the meter loop. */
+  body.obs #clawdVid { position: relative; }
+  #voice-orb { display: none; }
+  body.obs #voice-orb {
+    display: block;
+    position: absolute;
+    top: -5%; right: -5%;
+    width: 20%; aspect-ratio: 1;
+    min-width: 104px; max-width: 176px;
+    pointer-events: none;
+    z-index: 10001;
+    --lvl: 0;
+    --orb: var(--ok);
+  }
+  body.obs.hide-status #voice-orb { display: none; }
+  /* Outer halo — expands + brightens as you speak. */
+  #voice-orb .orb-halo {
+    position: absolute; inset: 0; border-radius: 50%;
+    background: radial-gradient(circle at 50% 50%,
+      color-mix(in srgb, var(--orb) 55%, transparent) 0%,
+      color-mix(in srgb, var(--orb) 22%, transparent) 38%,
+      transparent 70%);
+    transform: scale(calc(1 + var(--lvl) * 0.95));
+    opacity: calc(0.4 + var(--lvl) * 0.6);
+    transition: transform 90ms linear, opacity 90ms linear;
+  }
+  /* The sphere itself — a lit ball with a soft glow. */
+  #voice-orb .orb-core {
+    position: absolute; inset: 25%;
+    border-radius: 50%;
+    background: radial-gradient(circle at 35% 30%,
+      #ffffff 0%,
+      color-mix(in srgb, var(--orb) 55%, #fff) 16%,
+      var(--orb) 54%,
+      color-mix(in srgb, var(--orb) 55%, #000) 100%);
+    box-shadow:
+      0 0 calc(14px + var(--lvl) * 50px) color-mix(in srgb, var(--orb) 85%, transparent),
+      inset 0 0 14px rgba(255,255,255,0.4);
+    transform: scale(calc(1 + var(--lvl) * 0.3));
+    transition: transform 90ms linear, box-shadow 90ms linear;
+    animation: orb-breathe 3.2s ease-in-out infinite;
+  }
+  @keyframes orb-breathe {
+    0%, 100% { filter: brightness(0.9); }
+    50%      { filter: brightness(1.15); }
+  }
+  /* State colors mirror the status pill. */
+  body.obs #voice-orb.listening { --orb: var(--ok); }
+  body.obs #voice-orb.armed     { --orb: var(--accent2); }
+  body.obs #voice-orb.speaking  { --orb: var(--warn); }
+  body.obs #voice-orb.thinking  { --orb: #9aa0a6; }
+  body.obs #voice-orb.error     { --orb: var(--bad); }
+  /* Armed = wake word heard, command being captured — pulse fast + hard so
+     it's unmistakable that clawd is actively grabbing what you say. */
+  body.obs #voice-orb.armed    .orb-core { animation-duration: 0.7s; }
+  body.obs #voice-orb.thinking .orb-core { animation-duration: 1.6s; }
+  body.obs #voice-orb.error    .orb-core { animation: none; }
+
   /* ── Diagnostic chip (top-left) — visible in OBS mode for at-a-glance
      backend / connection state. Hidden in dev mode. */
   #diag-chip {
@@ -803,6 +867,12 @@
         <div id="tabStack">
           <div id="clawdVid">
             <video id="clawdVideo" autoplay muted playsinline src="clawdassets/idle_1.mp4"></video>
+            <!-- Voice orb — big pulsating sphere, top-right of the avatar.
+                 Tracks your voice + listener state; see CSS for the why. -->
+            <div id="voice-orb" class="listening">
+              <div class="orb-halo"></div>
+              <div class="orb-core"></div>
+            </div>
           </div>
           <div id="tabList"></div>
         </div>
@@ -2859,6 +2929,16 @@ async function onSend(opts = {}) {
   if (!text) return;
   if (!state.connected) { renderError("Not connected", tab); return; }
 
+  // "/new" or "/clear" = start a COMPLETELY fresh session (drops the resumed
+  // claude -p chain server-side). Not a chat turn — reset and bail, clearing
+  // the visible transcript too.
+  if (text === "/new" || text === "/clear") {
+    $input.value = ""; saveDraft(tab, ""); autosize($input);
+    ttsReset();
+    await resetTab(tab, { skipConfirm: true });
+    return;
+  }
+
   const empty = tab.paneEl.querySelector(".empty");
   if (empty) empty.remove();
 
@@ -2892,20 +2972,17 @@ async function onSend(opts = {}) {
   autosize($input);
 
   try {
-    // ── Stateless call turns (voice) ──────────────────────────────────────
-    // A voice/call turn must answer ONLY what was just said. The shared
-    // session (agent:clawd:main) otherwise accumulates every prior turn AND
-    // every ambient call utterance, so the model re-fires stale standing
-    // imperatives ("ask Binji X…") instead of the current message — it gets
-    // stuck re-answering old stuff. Reset the server transcript right before
-    // sending so the model sees THIS message and nothing else. Typed/paste
-    // sends (no opts.interrupt) keep their context.
-    if (opts.interrupt) {
-      try {
-        await rpc("sessions.reset", { key: tab.sessionKey, reason: "stateless-call-turn" });
-        tab.lastSentModel = null;   // reset drops the server's model pin → it reverts to the sonnet DEFAULT. Force ensureModelSelected to re-send /model so the picker's choice (e.g. opus 4.8) actually applies to the fresh session.
-      } catch (e) { if (window.__clawdDebug) console.warn("[stateless] reset failed:", e.message); }
-    }
+    // ── One fluid session ─────────────────────────────────────────────────
+    // Voice ("okay clawd") and backchannel turns share ONE continuous session
+    // (agent:clawd:main) and resume it every turn, so the out-loud clawd
+    // remembers the whole conversation — including everything said privately
+    // on the backchannel. We do NOT reset per voice turn anymore.
+    //
+    // History: voice turns USED to fire sessions.reset to stay "stateless,"
+    // because the cheap models we ran then choked on accumulated context and
+    // re-fired stale standing imperatives ("ask Binji X…"). The claude -p
+    // brain handles full context fine, so that crutch is gone. Only an
+    // explicit "/new" (the new-chat path below) drops memory now.
     await ensureModelSelected(tab);
     const res = await rpc("chat.send", {
       sessionKey: tab.sessionKey,
@@ -2937,9 +3014,9 @@ async function onStop() {
   }
 }
 
-async function resetTab(tab) {
+async function resetTab(tab, { skipConfirm = false } = {}) {
   if (!tab) return;
-  if (!confirm(`Reset "${tab.displayName}"? Server transcript will be cleared.`)) return;
+  if (!skipConfirm && !confirm(`Reset "${tab.displayName}"? Server transcript will be cleared.`)) return;
   try {
     await rpc("sessions.reset", { key: tab.sessionKey, reason: "reset" });
     tab.runs.clear();
@@ -3557,6 +3634,10 @@ $btnSpeak.addEventListener("click", () => {
 const $btnMic = document.getElementById("btnMic");
 const $statusPill = document.getElementById("status-pill");
 const $statusLabel = $statusPill ? $statusPill.querySelector(".label") : null;
+// Voice orb (top-right of avatar) mirrors the pill's state + tracks live
+// voice level. _orbLvl is the smoothed level the meter loop writes each frame.
+const $voiceOrb = document.getElementById("voice-orb");
+let _orbLvl = 0;
 
 // Two-word wake phrase: "okay claude" / "so claude" / "ok claude". The prefix is
 // REQUIRED — bare "claude" must NOT fire (guests on an AI podcast say it
@@ -3567,9 +3648,10 @@ const $statusLabel = $statusPill ? $statusPill.querySelector(".label") : null;
 const WAKE_RE = /\b(?:so|okay|ok)[\s,-]+(claude|clawd|claud|cloud|clyde|clod|clot|klaus|claus|clawed|clawde|claude?o|glaude)s?\b/i;
 const WAKE_STRIP_RE = new RegExp(WAKE_RE.source, "gi");  // strip every wake phrase from the captured command
 const WAKE_WINDOW_MS = 6000;        // join SR text from the last ~6s for wake matching + command capture (covers "talk first, then drop the wake word")
-const SILENCE_MS = 2500;            // how long of TRUE silence after wake before submitting (raised from 1500 — was cutting people off mid-sentence on natural pauses)
+const SILENCE_MS = 900;             // how long of TRUE silence after wake before submitting (snappy — below the ~1500 mid-sentence-cutoff floor, so it may submit on long natural pauses)
 const ECHO_TAIL_MS = 800;            // ignore SR for this long after TTS audio ends
 const RESTART_DELAY_MS = 250;        // backoff before restarting after onend
+const PTT_FLUSH_MS = 400;            // on push-to-talk release, wait this long for SR to deliver a pending final before submitting
 const TRANSCRIPT_MAX_AGE_MS = 5 * 60 * 1000;   // 5 minutes of room context
 const TRANSCRIPT_MAX_ENTRIES = 80;             // hard cap so prompts don't bloat
 
@@ -3580,6 +3662,7 @@ let _silenceTimer = null;
 let _restartTimer = null;
 let _lastSpokeTs = 0;         // Date.now() of last TTS audio activity (echo gate)
 let _wakeManuallyPaused = false;  // user clicked the mic to take over
+let _pttActive = false;       // push-to-talk button held (backchannel ptt-down…ptt-up): capture without a wake word, never auto-submit on silence
 
 // Rolling room transcript — every finalized SR chunk lands here (gated by
 // the echo window so clawd's own voice isn't captured as user speech).
@@ -3602,6 +3685,23 @@ function pushTranscript(text) {
   _transcript.push({ ts: Date.now(), text });
   trimTranscript();
   renderTranscriptOverlay();
+}
+
+// Persist to the server-side STT log (~/.clawd-call-brain/stt-log.jsonl) the
+// FULL room transcript — every non-echo utterance clawd hears — plus a marker
+// each time a wake turn fires. The in-memory _transcript is trimmed/capped and
+// only the short wake-window utterance is ever SENT to the brain; this file is
+// the complete record the brain can Read later to recall the whole call.
+// Fire-and-forget — a logging hiccup must never stall speech handling.
+function logStt(payload) {
+  try {
+    fetch("/api/stt-log", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+      keepalive: true,
+    }).catch(() => {});
+  } catch (e) {}
 }
 
 function trimTranscript() {
@@ -3633,6 +3733,11 @@ function setPillState(state, label) {
   $statusPill.classList.remove("listening", "armed", "speaking", "thinking", "error");
   $statusPill.classList.add(state);
   if (label && $statusLabel) $statusLabel.textContent = label;
+  // Mirror onto the voice orb so its color tracks the same state.
+  if ($voiceOrb) {
+    $voiceOrb.classList.remove("listening", "armed", "speaking", "thinking", "error");
+    $voiceOrb.classList.add(state);
+  }
 }
 
 function inEchoWindow() {
@@ -3686,7 +3791,9 @@ function startWakeRecog() {
 
   r.onresult = (e) => {
     pingSpeechMeter();
-    if (inEchoWindow()) return;
+    // While push-to-talk is held we WANT to capture even right after TTS (the
+    // press ducks clawd's own speech), so bypass the echo gate for PTT only.
+    if (inEchoWindow() && !_pttActive) return;
     let interim = "";
     for (let i = e.resultIndex; i < e.results.length; i++) {
       const res = e.results[i];
@@ -3764,6 +3871,9 @@ function stopWakeRecog() {
 }
 
 function armSilenceTimer() {
+  // Push-to-talk owns its own submit timing (release fires it); a trailing
+  // silence must never auto-submit while the button is held.
+  if (_pttActive) return;
   clearTimeout(_silenceTimer);
   _silenceTimer = setTimeout(submitWakeBuffer, SILENCE_MS);
 }
@@ -3801,8 +3911,48 @@ function submitWakeBuffer() {
   const composed = _words.length > VOICE_WORD_CAP ? _words.slice(-VOICE_WORD_CAP).join(" ") : prompt;
   $input.value = composed;
   autosize($input);
+  // Mark in the STT log exactly what this wake turn forwarded to the brain, so
+  // the log shows the boundary between ambient room chatter and what was asked.
+  logStt({ wake: true, sent: composed });
   setPillState("thinking", "thinking…");
   onSend({ interrupt: true });   // voice turn: interrupt any in-flight answer, don't drop this question
+}
+
+// ── Push-to-talk (driven from the backchannel) ─────────────────────────────
+// The backchannel POSTs /trigger-ptt-down on button-hold and /trigger-ptt-up
+// on release; those arrive here as SSE "ptt-down" / "ptt-up". PTT reuses the
+// wake-capture machinery (_wakeArmed grows _wakeBuf in handleFinalChunk) but
+// skips the wake regex and the silence-submit — the press/release IS the
+// timing. So: no "okay clawd", no trailing-silence delay.
+function pttDown() {
+  if (_pttActive) return;
+  _pttActive = true;
+  // The press means "listen to me NOW" — duck any in-flight TTS so clawd's own
+  // voice doesn't bleed into the capture (and so the room hears the interrupt).
+  try { ttsReset(); } catch (e) {}
+  _wakeArmed = true;     // route finalized chunks into _wakeBuf
+  _wakeBuf = "";
+  _liveInterim = "";
+  clearTimeout(_silenceTimer);
+  _lastSubmitTs = Date.now();   // ignore older rolling chatter
+  setPillState("armed", "push-to-talk — listening…");
+  try { clawdVid.listening(); } catch (e) {}
+}
+
+function pttUp() {
+  if (!_pttActive) return;
+  // Fold the un-finalized tail into the buffer so a quick release doesn't drop
+  // the last word, then give SR a short grace to deliver any pending final
+  // (handleFinalChunk keeps appending while _wakeArmed is still true) before we
+  // submit. _pttActive stays true across the grace so armSilenceTimer keeps
+  // no-op'ing and we can't double-submit.
+  if (_liveInterim) {
+    _wakeBuf = (_wakeBuf ? _wakeBuf + " " : "") + _liveInterim;
+    _liveInterim = "";
+  }
+  setPillState("thinking", "thinking…");
+  clearTimeout(_silenceTimer);
+  setTimeout(() => { _pttActive = false; submitWakeBuffer(); }, PTT_FLUSH_MS);
 }
 
 // ── Paste-to-clawd text input ────────────────────────────────────────────
@@ -3838,6 +3988,7 @@ function handleFinalChunk(rawText) {
   // recent-window match reads (see onresult). Arming itself happens there,
   // against the combined window; here we only grow the command once armed.
   pushTranscript(text);
+  logStt({ text });   // full room transcript → server-side STT log
   if (_wakeArmed) {
     _wakeBuf = (_wakeBuf ? _wakeBuf + " " : "") + text;
     setPillState("armed", "go on…");
@@ -4041,6 +4192,8 @@ try {
   const _wakeEvents = new EventSource("/events");
   _wakeEvents.onmessage = (e) => {
     if (e.data === "toggle-mic" && $btnMic) $btnMic.click();
+    else if (e.data === "ptt-down") pttDown();
+    else if (e.data === "ptt-up") pttUp();
     else if (e.data === "stop") {
       // PANIC STOP relayed from the backchannel /stop (POST /trigger-stop).
       // Kill the voice immediately — works even when no run is active (model
@@ -4297,9 +4450,10 @@ setTimeout(() => fetchSessionStats({ countCost: false }), 1500);
       return Math.sqrt(sum / buf.length);
     };
     function tick() {
+      let pct = 0;
       if (meters.micAnalyser) {
         meters.micAnalyser.getByteTimeDomainData(micBuf);
-        const pct = Math.min(100, rms(micBuf) * 240);
+        pct = Math.min(100, rms(micBuf) * 240);
         $mic.style.width = pct.toFixed(1) + "%";
         $micRow.classList.toggle("idle", pct < 1);
       }
@@ -4307,6 +4461,14 @@ setTimeout(() => fetchSessionStats({ countCost: false }), 1500);
       const spct = Math.min(100, rms(spkBuf) * 240);
       $spk.style.width = spct.toFixed(1) + "%";
       $spkRow.classList.toggle("idle", spct < 1);
+      // Voice orb level: track the user's voice while listening/armed, and
+      // clawd's own voice while it's speaking. Fast attack / slow release so
+      // the sphere snaps to speech but glides back down, never jittery.
+      if ($voiceOrb) {
+        const raw = ($voiceOrb.classList.contains("speaking") ? spct : pct) / 100;
+        _orbLvl += (raw - _orbLvl) * (raw > _orbLvl ? 0.55 : 0.12);
+        $voiceOrb.style.setProperty("--lvl", _orbLvl.toFixed(3));
+      }
       requestAnimationFrame(tick);
     }
     tick();
