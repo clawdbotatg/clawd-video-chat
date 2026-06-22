@@ -9,6 +9,12 @@ These notes are for the things you can't infer from reading code.
 > backchannel = PRIVATE) and how public/private routing actually works. One shared
 > openclaw `clawd` session, two input surfaces, two output channels. File:line
 > landmarks included.
+>
+> **What's running on leftclaw (and how to stop it)?** See **[`SERVICES.md`](SERVICES.md)**
+> — the always-on launchd daemons this rig leaves running (`cc-bridge`,
+> `cc-watcher`, the harness, the backchannel proxy), their ports/logs, health
+> checks, and off-switches. Read it before reworking the call system, since these
+> won't stop themselves.
 
 ## Quick verbs the user uses
 
