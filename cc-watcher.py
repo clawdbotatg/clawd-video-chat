@@ -184,6 +184,7 @@ class Brain:
             self.connected.clear()
             with self.lock:
                 self.wfile = None
+            self.busy = False  # a dropped mid-stream reply must not stick busy=True
             time.sleep(2)
 
     def _track(self, data):
@@ -220,15 +221,18 @@ class Brain:
         frame = {"type": "req", "id": "watch-" + uuid.uuid4().hex[:8],
                  "method": "chat.send",
                  "params": {"sessionKey": SESSION_KEY, "message": message}}
-        with self.lock:
-            if not self.wfile:
-                log("bridge: not connected, dropping wake")
-                return
-            try:
-                _ws_send(self.wfile, self.lock, json.dumps(frame))
-            except Exception as e:
-                log(f"bridge: wake send failed {e!r}")
-                return
+        # NOTE: do NOT hold self.lock here — _ws_send acquires it itself, and this
+        # lock is non-reentrant, so wrapping the call would deadlock the watcher
+        # (froze it on the first real wake; dry-run hid it by returning earlier).
+        wfile = self.wfile
+        if not wfile:
+            log("bridge: not connected, dropping wake")
+            return
+        try:
+            _ws_send(wfile, self.lock, json.dumps(frame))
+        except Exception as e:
+            log(f"bridge: wake send failed {e!r}")
+            return
         self.busy = True  # our injection starts a turn
         log(f"woke clawd → {message[:90]}")
 
