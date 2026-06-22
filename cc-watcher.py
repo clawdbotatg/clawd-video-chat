@@ -41,6 +41,10 @@ BRIDGE_URL = ("127.0.0.1", 7861, "/")
 HARNESS_TOKEN_FILE = os.path.expanduser("~/clawd/clawd-harness/.clawd-harness.token")
 PROJECTS_DIR = os.path.expanduser("~/clawd/clawd-harness/projects")
 CLAWD_DIR = os.path.realpath(os.path.expanduser("~/clawd"))
+# The `code` helper records the workers clawd STARTED here. We only ping for these,
+# so the watcher never nags about Austin's own interactive sessions that merely live
+# in an eligible project (that bug surfaced once clawd-video-chat became eligible).
+WORKERS_FILE = os.path.expanduser("~/.clawd-call-brain/.code-workers.json")
 SESSION_KEY = os.environ.get("CC_WATCHER_SESSION_KEY", "agent:clawd:main")
 DRYRUN = os.environ.get("CC_WATCHER_DRYRUN") == "1"
 LOG = os.environ.get("CC_WATCHER_LOG", "/tmp/cc-watcher.log")
@@ -59,6 +63,16 @@ def log(msg):
             f.write(line + "\n")
     except OSError:
         pass
+
+
+def _load_workers():
+    """cid -> project for the workers clawd started (written by the `code` helper).
+    Re-read each pass so newly-started workers are picked up live."""
+    try:
+        with open(WORKERS_FILE) as f:
+            return json.load(f)
+    except Exception:
+        return {}
 
 
 # ── RFC 6455 client (same minimal framing as the `code` helper) ──────────────
@@ -298,10 +312,11 @@ def main():
                                 for p in f.get("projects", [])}
                 elif t == "sessions":
                     sessions = f.get("sessions", [])
+                    workers = _load_workers()   # only ping for workers clawd STARTED
                     for s in sessions:
                         cid = s.get("cid")
                         proj = projects.get(s.get("pid"), {})
-                        if not cid or not proj.get("eligible"):
+                        if not cid or cid not in workers:
                             continue
                         status = s.get("status", "idle")
                         prev = state.get(cid)
