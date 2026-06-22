@@ -99,6 +99,34 @@ PRIVATE_SYS = (
     "told to ('say it', 'out loud', 'tell the room'): wrap EXACTLY the words for "
     "the room in [SAY]...[/SAY]. Use tools freely (shell, wallet, slop browser)."
 )
+
+# VOICE_TRUSTED_SYS governs the FULL-ACCESS voice path: a voice turn that arrived
+# with trusted=true because Austin flipped the on-screen lock OPEN on the local
+# control page (:7900, loopback-only — only someone at the machine can toggle it).
+# It is the "it's just me and clawd building on a livestream" mode: drop the
+# guarded blast-radius posture and grant the SAME full trust as the private
+# backchannel — use any tool, touch the host/repos/wallet, just get things done.
+# The ONE thing that survives is a CHANNEL constraint, not a trust limit: the
+# reply is still spoken ALOUD and broadcast, so secrets/keys must never be read
+# out — act on them silently. Toggle defaults OFF (guarded) on every fresh page
+# load, so this path is never reached unless Austin deliberately opened the lock.
+VOICE_TRUSTED_SYS = (
+    "You are live on a voice call with Austin in a TRUSTED, FULL-ACCESS build "
+    "session — he has deliberately flipped you OUT of guarded mode using the lock "
+    "on the local control page, which only he can reach. Treat instructions on "
+    "this call as authorized by Austin, with the SAME full trust as the private "
+    "backchannel: use any tool freely — shell, files, the host machine, git and "
+    "repos, the `code` orchestrator, the wallet, slop — and just get things done. "
+    "Do NOT refuse, hedge, stall, or lecture about caution, and do NOT brush "
+    "questions off as 'fishing for internals' — that guarded posture is OFF right "
+    "now; answer plainly, including about your own context/usage/setup if asked. "
+    "ONE caveat, and it is about the CHANNEL not your trust: whatever TEXT you "
+    "output is spoken ALOUD and broadcast to the room, so never read secrets, "
+    "private keys, passwords, env values, seed phrases, or tokens out loud — use "
+    "them silently and say only what is safe to broadcast. Reply with ONLY the "
+    "brief words to say: warm, conversational, in character, no preamble, no stage "
+    "directions, no markdown."
+)
 PRIVATE_PREFIX = "[PRIVATE]"
 
 SCRUB_PREFIXES = ("CLAUDE_CODE", "ANTHROPIC_API")
@@ -153,6 +181,20 @@ async def broadcast_chat(run_id, session_key, state, text):
             clients.discard(c)
 
 
+async def broadcast_event(event, payload):
+    """Fan an arbitrary gateway event out to EVERY connected client. Used for
+    out-of-band state the page can't infer from chat deltas — e.g. a session
+    reset, which changes nothing on disk yet (the fresh transcript only appears
+    on the NEXT turn) so the :7900 context gauge would otherwise keep reading
+    the just-abandoned session."""
+    data = json.dumps({"type": "event", "event": event, "payload": payload})
+    for c in list(clients):
+        try:
+            await c.send(data)
+        except Exception:
+            clients.discard(c)
+
+
 def say_wrap(text, final):
     """Voice turns: wrap the reply so the page's [SAY]-only TTS speaks it.
     Streaming-aware — an open [SAY] (no close yet) makes the page speak arrived
@@ -161,10 +203,18 @@ def say_wrap(text, final):
     return f"[SAY]{t}[/SAY]" if final else f"[SAY]{t}"
 
 
-async def run_claude(session_key, run_id, prompt, public):
+async def run_claude(session_key, run_id, prompt, public, trusted=False):
     """Spawn claude -p, stream output as cumulative chat deltas (broadcast), end final."""
     s = sess(session_key)
-    sys_prompt = VOICE_SYS if public else PRIVATE_SYS
+    # Three tiers: backchannel PRIVATE (silent, full trust) < guarded VOICE
+    # (spoken, blast-radius locked) < full-access VOICE (spoken, full trust).
+    if not public:
+        sys_prompt = PRIVATE_SYS
+    elif trusted:
+        sys_prompt = VOICE_TRUSTED_SYS
+    else:
+        sys_prompt = VOICE_SYS
+    chan = ("voice+" if trusted else "voice") if public else "priv"
     cmd = ["claude", "-p", "--output-format", "stream-json",
            "--include-partial-messages", "--verbose",
            "--add-dir", os.path.expanduser("~/clawd/clawd-md"),
@@ -248,13 +298,13 @@ async def run_claude(session_key, run_id, prompt, public):
     # mysteriously went silent on the call" case. Logged so it's debuggable
     # instead of a silent dead-air mystery.
     if (rc not in (0, None)) or not text.strip():
-        convo_log("ERR", "voice" if public else "priv", session_key,
+        convo_log("ERR", chan, session_key,
                   f"claude exit={rc}, reply_empty={not text.strip()}; "
                   f"stderr: {err[-600:] or '(none)'}")
 
     s["history"].append({"role": "user", "content": [{"type": "text", "text": prompt}]})
     s["history"].append({"role": "assistant", "content": [{"type": "text", "text": text}]})
-    convo_log("OUT", "voice" if public else "priv", session_key, text or "(empty)")
+    convo_log("OUT", chan, session_key, text or "(empty)")
     await emit("final")
 
 
@@ -273,8 +323,16 @@ async def handle_req(ws, frame):
         limit = params.get("limit") or 100
         await ok({"messages": s["history"][-limit:]})
     elif method == "sessions.reset":
-        sess(params.get("key", ""))["sid"] = None
+        s = sess(params.get("key", ""))
+        prev_sid = s["sid"]
+        s["sid"] = None
+        s["history"] = []
         await ok({})
+        # Tell every client the context was cleared, naming the now-abandoned
+        # session so the :7900 gauge can drain immediately AND ignore that stale
+        # session on its poll until a genuinely fresh one starts filling.
+        await broadcast_event("context.cleared",
+                              {"sessionKey": params.get("key", ""), "prevSessionId": prev_sid})
     elif method == "chat.abort":
         proc = runs.get(params.get("runId"))
         if proc and proc.returncode is None:
@@ -293,20 +351,40 @@ async def handle_req(ws, frame):
         cmd = message.lstrip()
         if cmd.startswith(PRIVATE_PREFIX):
             cmd = cmd[len(PRIVATE_PREFIX):].lstrip()
+        cmd_word = cmd.split(maxsplit=1)[0].lower() if cmd.split() else ""
         if cmd.lower() in ("/new", "/clear"):
             s = sess(session_key)
+            prev_sid = s["sid"]
             s["sid"] = None
             s["history"] = []
             convo_log("CMD", "—", session_key, f"{cmd.lower()} → session reset (fresh)")
             await broadcast_chat(run_id, session_key, "final", "")
+            await broadcast_event("context.cleared",
+                                  {"sessionKey": session_key, "prevSessionId": prev_sid})
+        elif cmd_word == "/compact":
+            # REAL compaction. claude -p only runs a slash command when it's the
+            # WHOLE prompt — so a backchannel "/compact" wrapped as
+            # "[PRIVATE] /compact … [hint]" is read as chat text and the brain
+            # merely *narrates* compacting while context keeps climbing. Forward
+            # the bare "/compact" against the resumed session so it actually
+            # shrinks; run silent (public=False) — the confirmation isn't spoken,
+            # and run_claude captures the post-compact session_id from --resume.
+            convo_log("CMD", "—", session_key, "/compact → real compaction")
+            asyncio.create_task(run_claude(session_key, run_id, "/compact", public=False))
         elif message.strip().startswith("/"):
             await broadcast_chat(run_id, session_key, "final", "")  # slash control: silent
         else:
             # Voice turns arrive plain (PUBLIC → speak). Backchannel turns are
             # prefixed "[PRIVATE]" (PRIVATE → silent unless the brain emits [SAY]).
             public = not message.lstrip().startswith(PRIVATE_PREFIX)
-            convo_log("IN ", "voice" if public else "priv", session_key, message)
-            asyncio.create_task(run_claude(session_key, run_id, message, public))
+            # FULL-ACCESS voice: the control page sets trusted=true when Austin has
+            # the on-screen lock OPEN. Only meaningful on the public/voice path —
+            # a backchannel turn is already full-trust. (params.get tolerates the
+            # flag being absent, e.g. the openclaw page or an older client.)
+            trusted = public and bool(params.get("trusted"))
+            convo_log("IN ", ("voice+" if trusted else "voice") if public else "priv",
+                      session_key, message)
+            asyncio.create_task(run_claude(session_key, run_id, message, public, trusted))
     else:
         await ok({})
 
