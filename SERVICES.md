@@ -62,9 +62,10 @@ it can't watch a long-running task on its own. `cc-watcher.py` is the loop it la
    normal backchannel turn.
 
 So **if you see clawd getting `[auto-watch]` backchannel messages "on his own," this
-is why** — it's the watcher, not a ghost. It only tracks **eligible** repos (those
-symlinked into the harness `projects/` from `~/clawd`, non-infra — see the `code`
-helper in `~/.clawd-call-brain/`). When no such workers are active it does nothing
+is why** — it's the watcher, not a ghost. It only tracks **eligible** repos
+(projects living in the harness `projects/` dir, minus an infra denylist like
+`clawd-md` — see the `code` helper in `~/.clawd-call-brain/`). When no such workers
+are active it does nothing
 (measured 0% CPU). It's idle-gated so it never wakes the brain mid-reply. Set
 `CC_WATCHER_DRYRUN=1` to make it log intended wakes instead of sending them.
 

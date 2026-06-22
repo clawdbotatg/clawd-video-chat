@@ -16,8 +16,8 @@ turn, and does one step (answer / ship / follow up) — no babysitting, works ac
 turns. Both hops are loopback, no auth.
 
 Which sessions count as "clawd's workers": only sessions in an ELIGIBLE project — a
-harness project whose dir is a symlink into ~/clawd and not infra (same rule as the
-`code` helper). The operator's own harness sessions are ignored.
+project living in the harness projects/ dir that isn't on the infra denylist (same
+rule as the `code` helper). The operator's own harness sessions are ignored.
 
 Safety: injections are IDLE-GATED — the watcher tracks clawd's reply state off the
 bridge's chat broadcasts and waits for him to be idle before waking him, so it never
@@ -39,15 +39,15 @@ import uuid
 HARNESS_URL = ("127.0.0.1", 8787, "/ws")
 BRIDGE_URL = ("127.0.0.1", 7861, "/")
 HARNESS_TOKEN_FILE = os.path.expanduser("~/clawd/clawd-harness/.clawd-harness.token")
+PROJECTS_DIR = os.path.expanduser("~/clawd/clawd-harness/projects")
 CLAWD_DIR = os.path.realpath(os.path.expanduser("~/clawd"))
 SESSION_KEY = os.environ.get("CC_WATCHER_SESSION_KEY", "agent:clawd:main")
 DRYRUN = os.environ.get("CC_WATCHER_DRYRUN") == "1"
 LOG = os.environ.get("CC_WATCHER_LOG", "/tmp/cc-watcher.log")
 
 INFRA = {
-    "clawd-harness", "clawd-video-chat-cc", "clawd-video-chat", "clawd-backchannel",
+    "clawd-harness", "clawd-video-chat-cc", "clawd-backchannel",
     "clawd-md", "clawd-chronicle", "clawd-call-brain", ".clawd-call-brain",
-    "clawd-containers", "clawd-hermes",
 }
 
 
@@ -260,13 +260,11 @@ def main():
     state = {}             # cid -> {"status","proj","seen"}
 
     def eligible(path, name):
+        # Workable = a project in the harness projects/ dir, not on the denylist.
+        # (Was "symlink into ~/clawd"; repos now live directly in projects/.)
         if name in INFRA or not path:
             return False
-        try:
-            return (os.path.islink(path)
-                    and os.path.realpath(path).startswith(CLAWD_DIR + os.sep))
-        except OSError:
-            return False
+        return path.startswith(PROJECTS_DIR + os.sep)
 
     while True:
         try:
