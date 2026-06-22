@@ -44,14 +44,14 @@ CLAWD_DIR = os.path.realpath(os.path.expanduser("~/clawd"))
 # The `code` helper records the workers clawd STARTED here. We only ping for these,
 # so the watcher never nags about Austin's own interactive sessions that merely live
 # in an eligible project (that bug surfaced once clawd-video-chat became eligible).
-WORKERS_FILE = os.path.expanduser("~/.clawd-call-brain/.code-workers.json")
+WORKERS_FILE = os.path.expanduser("~/clawd/clawd-harness/projects/clawd-agent/.code-workers.json")
 SESSION_KEY = os.environ.get("CC_WATCHER_SESSION_KEY", "agent:clawd:main")
 DRYRUN = os.environ.get("CC_WATCHER_DRYRUN") == "1"
 LOG = os.environ.get("CC_WATCHER_LOG", "/tmp/cc-watcher.log")
 
 INFRA = {
     "clawd-harness", "clawd-video-chat-cc", "clawd-backchannel",
-    "clawd-md", "clawd-chronicle", "clawd-call-brain", ".clawd-call-brain",
+    "clawd-md", "clawd-chronicle", "clawd-agent", ".clawd-agent",
 }
 
 
