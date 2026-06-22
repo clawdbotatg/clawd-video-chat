@@ -408,6 +408,7 @@
     pointer-events: none;
     z-index: 10001;
     --lvl: 0;
+    --ctx: 0;          /* live context-window occupancy 0..1 (session-stats) */
     --orb: var(--ok);
   }
   body.obs.hide-status #voice-orb { display: none; }
@@ -453,6 +454,33 @@
   body.obs #voice-orb.armed    .orb-core { animation-duration: 0.7s; }
   body.obs #voice-orb.thinking .orb-core { animation-duration: 1.6s; }
   body.obs #voice-orb.error    .orb-core { animation: none; }
+
+  /* ── Context gauge: the orb doubles as a "how full is the brain's context"
+     meter. Hue is already spoken for by listener state, so fullness is shown
+     as a luminous LIQUID LEVEL instead: the drained region is the TOP
+     (1 − ctx), dimmed like smoked glass with a glowing waterline at the fill
+     line. An idle green orb that's nearly full reads at a glance, and a
+     /compact (or /new, or a bridge restart) visibly DRAINS it. --ctx 0..1 is
+     written from session-stats; clip the fill to the sphere via overflow. */
+  #voice-orb .orb-core { overflow: hidden; }
+  #voice-orb .orb-fill {
+    position: absolute; left: 0; right: 0; top: 0;
+    height: calc((1 - var(--ctx, 0)) * 100%);
+    background: linear-gradient(to bottom, rgba(8,10,12,0.66), rgba(8,10,12,0.44));
+    border-bottom: 2px solid color-mix(in srgb, var(--orb) 60%, #fff);
+    box-shadow: 0 2px 7px color-mix(in srgb, var(--orb) 75%, transparent);
+    transition: height 700ms cubic-bezier(.4,0,.2,1),
+                border-color 400ms linear, box-shadow 400ms linear;
+    pointer-events: none;
+  }
+  /* Nearly full (≥85%) → waterline goes warning-red and the orb breathes
+     faster: an unmistakable "compact soon" cue that rides independently of the
+     state hue still coloring the lit body below the line. */
+  body.obs #voice-orb.ctx-full .orb-fill {
+    border-bottom-color: color-mix(in srgb, var(--bad) 70%, #fff);
+    box-shadow: 0 2px 10px color-mix(in srgb, var(--bad) 85%, transparent);
+  }
+  body.obs #voice-orb.ctx-full .orb-core { animation-duration: 1.4s; }
 
   /* ── Diagnostic chip (top-left) — visible in OBS mode for at-a-glance
      backend / connection state. Hidden in dev mode. */
@@ -513,6 +541,34 @@
   }
   #audio-meters .routing .ok { color: var(--ok); }
   #audio-meters .routing .warn { color: var(--warn); }
+
+  /* ── Full-access lock (bottom-center) ────────────────────────────────────
+     Tap to flip clawd between GUARDED (🔒 — voice is blast-radius locked, the
+     default) and FULL ACCESS (🔓 — full trust, "it's just me & clawd building").
+     The control page is loopback-only, so only someone AT the machine can flip
+     it. Visible in OBS mode; hidden on a clean stream (?nostatus / hide-status)
+     alongside the meters. Goes loud red when the guard is OFF so it's never
+     ambiguous on a stream that clawd is unlocked. */
+  #access-lock {
+    display: none;
+    position: fixed; bottom: 16px; left: 50%; transform: translateX(-50%);
+    z-index: 10001; pointer-events: auto; cursor: pointer; user-select: none;
+    font-family: var(--font-mono); font-size: 12px; letter-spacing: 0.04em;
+    padding: 7px 15px; border-radius: 999px; white-space: nowrap;
+    background: rgba(0,0,0,0.55); color: var(--fg3);
+    border: 1px solid rgba(255,255,255,0.12);
+    transition: background 0.15s ease, color 0.15s ease,
+                border-color 0.15s ease, box-shadow 0.15s ease;
+  }
+  body.obs #access-lock,
+  body:not(.obs) #access-lock { display: inline-block; }
+  body.obs.hide-status #access-lock { display: none; }
+  #access-lock:hover { border-color: rgba(255,255,255,0.32); color: var(--fg); }
+  #access-lock.full {
+    background: rgba(204,43,43,0.88); color: #fff;
+    border-color: var(--accent2);
+    box-shadow: 0 0 16px rgba(229,90,43,0.6);
+  }
 
   /* ── In-page tone test panel (bottom-right) ──────────────────────────────
      Three buttons that play test tones via different routing paths so we
@@ -731,6 +787,11 @@
   <div class="routing">routing: …</div>
 </div>
 
+<!-- Full-access lock — bottom-center. Tap to toggle guarded ↔ full access.
+     Defaults guarded on every fresh load (see state.fullAccess). Shift+L also
+     toggles it. -->
+<div id="access-lock" role="button" tabindex="0" title="Tap to toggle: guarded ↔ full access (Shift+L)">🔒 guarded</div>
+
 <!-- Tone test panel — uses clawd's own audio context (with setSinkId
      already routed to BH-2ch) so we can verify what actually leaks where. -->
 <div id="tone-tests">
@@ -820,7 +881,7 @@
                  Tracks your voice + listener state; see CSS for the why. -->
             <div id="voice-orb" class="listening">
               <div class="orb-halo"></div>
-              <div class="orb-core"></div>
+              <div class="orb-core"><div class="orb-fill"></div></div>
             </div>
           </div>
           <div id="tabList"></div>
@@ -1399,6 +1460,39 @@ function renderStatsChip() {
     root.querySelector(".stats-session").innerHTML =
       `<span>session · ${s.session.turns}t</span><span>↑${fmt(s.session.in)} ↓${fmt(s.session.out)}</span>`;
   }
+  updateOrbFill();
+}
+
+// Drive the voice orb's liquid level from the same real context numbers the
+// chip shows. Uses getElementById (not the $voiceOrb const declared far below)
+// so the immediate renderStatsChip() call at parse time can't hit a TDZ. When
+// we have no real token count yet (fresh/empty session) the orb reads drained.
+function updateOrbFill() {
+  const orb = document.getElementById("voice-orb");
+  if (!orb) return;
+  const r = window.__stats.real;
+  const cap = r.contextTokens || 200000;
+  const frac = cap > 0 ? Math.max(0, Math.min(1, (r.totalTokens || 0) / cap)) : 0;
+  orb.style.setProperty("--ctx", frac.toFixed(3));
+  orb.classList.toggle("ctx-full", frac >= 0.85);
+}
+
+// When the bridge broadcasts a context reset (a /new or /clear from EITHER the
+// voice page or the backchannel), drain the gauge instantly. The reset changes
+// nothing on disk yet — the fresh transcript only appears on clawd's NEXT turn —
+// so until then the poll would keep reading the just-abandoned session and snap
+// the gauge back. We park its id in _clearedSessionId and have fetchSessionStats
+// report 0 for as long as that's still the newest session, releasing the moment
+// a genuinely new session id shows up.
+let _clearedSessionId = null;
+function handleContextCleared(payload) {
+  _clearedSessionId = (payload && payload.prevSessionId) || window.__stats.real.sessionId || "__cleared__";
+  const r = window.__stats.real;
+  r.totalTokens = 0;
+  r.prevTotalTokens = null;   // next turn is a cold open
+  window.__stats.exact = false;
+  window.__stats.turn = { in: 0, out: 0, cacheRead: 0, cacheCreate: 0 };
+  renderStatsChip();          // drains the orb + zeroes the chip immediately
 }
 renderStatsChip();
 
@@ -1433,6 +1527,17 @@ async function fetchSessionStats({ countCost = true } = {}) {
     const tokens = d.tokens;
     if (tokens == null) return;  // session exists but no chat yet
     const r = window.__stats.real;
+    // Post-reset: the endpoint still reports the abandoned session as newest
+    // until clawd takes a fresh turn. Keep the gauge drained and bail until a
+    // genuinely new session id appears, then release the guard.
+    if (_clearedSessionId) {
+      if (d.sessionId && d.sessionId === _clearedSessionId) {
+        r.totalTokens = 0;
+        renderStatsChip();
+        return;
+      }
+      _clearedSessionId = null;  // a new session is live — resume normal tracking
+    }
     r.contextTokens = d.contextTokens || r.contextTokens;
     r.sessionId = d.sessionId || r.sessionId;
     r.totalTokens = tokens;
@@ -1506,6 +1611,12 @@ const state = {
   config: null,         // { wsUrl, token } — sessionKey now lives per-tab
   connected: false,
   thinking: localStorage.getItem("clawd.thinking") || "high",
+  // Full-access ("it's just me & clawd building") toggle. When true, voice turns
+  // are sent with trusted:true and the bridge drops the guarded blast-radius
+  // posture (see VOICE_TRUSTED_SYS in cc-bridge.py). sessionStorage (NOT local)
+  // so it survives a live-reload within the session but ALWAYS defaults back to
+  // guarded on a fresh tab/restart — full access never silently persists.
+  fullAccess: sessionStorage.getItem("clawd.fullAccess") === "1",
   identity: null,
   connectNonce: null,
   tabs: [],             // [{ id, sessionKey, displayName, selectedModel, lastSentModel, activeRunId, runs, runCompletions, paneEl, historyLoaded, verboseEnabled, dirty }]
@@ -2525,6 +2636,7 @@ function onFrame(frame) {
     switch (frame.event) {
       case "chat":  return handleChatEvent(frame.payload);
       case "agent": return handleAgentEvent(frame.payload);
+      case "context.cleared": return handleContextCleared(frame.payload);
       case "proxy.ready":
         // The backchannel proxy finished its server-side gateway handshake.
         return onConnected();
@@ -2931,6 +3043,9 @@ async function onSend(opts = {}) {
       sessionKey: tab.sessionKey,
       message: text,
       thinking: state.thinking,
+      // trusted:true → bridge runs this voice turn under VOICE_TRUSTED_SYS
+      // (full access, guard off). Set only while the on-screen lock is OPEN.
+      trusted: state.fullAccess,
       deliver: false,
       idempotencyKey: uuid(),
     });
@@ -3989,7 +4104,40 @@ window.addEventListener("keydown", (e) => {
     ttsMode: _ttsMode,
     recogAlive: !!_recog,
     paused: _wakeManuallyPaused,
+    fullAccess: state && state.fullAccess,
   });
+});
+
+// ── Full-access lock ───────────────────────────────────────────────────────
+// Flips clawd between GUARDED (voice blast-radius locked — the default) and
+// FULL ACCESS (full trust, "it's just me & clawd building"). The flag rides on
+// each voice turn's chat.send as trusted:<bool>; the bridge picks VOICE_SYS vs
+// VOICE_TRUSTED_SYS off it. sessionStorage-backed (survives a live-reload, NOT
+// a tab restart) so full access is always a deliberate, non-sticky act.
+const $accessLock = document.getElementById("access-lock");
+function renderAccessLock() {
+  if (!$accessLock) return;
+  const on = !!(state && state.fullAccess);
+  $accessLock.classList.toggle("full", on);
+  $accessLock.textContent = on ? "🔓 full access" : "🔒 guarded";
+}
+function setFullAccess(on) {
+  state.fullAccess = !!on;
+  try { sessionStorage.setItem("clawd.fullAccess", on ? "1" : "0"); } catch (e) {}
+  renderAccessLock();
+}
+if ($accessLock) {
+  $accessLock.addEventListener("click", () => setFullAccess(!state.fullAccess));
+  $accessLock.addEventListener("keydown", (e) => {
+    if (e.key === "Enter" || e.key === " ") { e.preventDefault(); setFullAccess(!state.fullAccess); }
+  });
+  renderAccessLock();
+}
+// Shift+L toggles it too (no mouse needed mid-stream).
+window.addEventListener("keydown", (e) => {
+  if (e.key !== "L" || !e.shiftKey || e.metaKey || e.ctrlKey) return;
+  if (e.target && /^(INPUT|TEXTAREA)$/.test(e.target.tagName)) return;
+  setFullAccess(!state.fullAccess);
 });
 
 // ── Live diagnostic chip (top-left in OBS mode) ──────────────────────────
@@ -4256,6 +4404,14 @@ window.__clawdState = state;
 // don't know which model / which provider previously generated those tokens,
 // so crediting their cost to this page-load would be misleading.
 setTimeout(() => fetchSessionStats({ countCost: false }), 1500);
+
+// Poll context occupancy so the chip + orb gauge stay live even when context
+// changes OUT OF BAND: backchannel turns, a /compact, /new, or a bridge restart
+// don't run through this page's turn loop, so without this the gauge freezes at
+// its last page-driven value (the "still shows 92% after a fresh reload"
+// staleness). Cheap — the endpoint just reads the brain's transcript file —
+// and countCost:false keeps it from ever double-crediting the cost meter.
+setInterval(() => fetchSessionStats({ countCost: false }), 7000);
 
 // ── clawd-video-chat boot extras ───────────────────────────────────────────
 // 1) ?dev=1 in the URL drops OBS mode and reveals the full chat UI for debugging.
