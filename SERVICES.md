@@ -13,22 +13,31 @@ on this box, and how do I turn it off?" without archaeology.
 > brain. So: if you tear down or rework the call rig, **also stop the services below**
 > — they will not stop themselves.
 
+## The ports at a glance
+
+Four ports carry the whole call. The mental model: **`:7900` senses it · `:7861`
+thinks it · `:8787` does the coding · `:7851` is the private channel into the brain.**
+Only `:7861` runs *clawd himself* (a `claude -p`); the rest are the surfaces and
+tools around him.
+
 ## The services
 
 | Label (launchd) | What it is | Port | Log |
 |---|---|---|---|
-| `com.clawd.cc-bridge` | The **brain** — `claude -p` WS bridge that backs the call. Drop-in for the old openclaw gateway. | `7861` | `~/.cache/clawd/cc-bridge.log` |
+| call page (`server.py`) | clawd's **eyes/ears/mouth** — serves the browser UI on the call: speech recognition ("okay clawd" wake word), TTS, the avatar, the backchannel input box, and writes the STT transcript log. Started by `slop-bridge.sh`, **not** launchd. | `7900` | `/tmp/clawd-vchat-7900.log` |
+| `com.clawd.cc-bridge` | The **brain** — `claude -p` WS bridge that backs the call; spawns a `claude -p` (cwd=`clawd-agent`) per message. Drop-in for the old openclaw gateway. | `7861` | `~/.cache/clawd/cc-bridge.log` |
 | `com.clawd.cc-watcher` | The **heartbeat** — watches coding workers and pings the brain when one blocks/finishes (see below). | — (WS client) | `~/.cache/clawd/cc-watcher.log` + `/tmp/cc-watcher.log` |
-| clawd-harness | The **worker engine** — spawns/observes `claude` sessions per repo. (Its own launchd label is `com.clawd.harness`.) | `8787` | harness logs |
-| clawd-backchannel proxy | Lets the browser reach the gateway/bridge through the Ed25519 handshake. Started manually by `slop-bridge.sh`, not launchd. | `7851` | `/tmp/clawd-backchannel.log` |
+| clawd-harness | The **worker engine** (clawd's hands) — spawns/observes coding `claude` sessions per repo. (Its own launchd label is `com.clawd.harness`.) | `8787` | harness logs |
+| clawd-backchannel proxy | The **private ear** — lets the browser reach the bridge through the Ed25519 handshake; carries Austin's PRIVATE messages. Started by `slop-bridge.sh`, not launchd. | `7851` | `/tmp/clawd-backchannel.log` |
 
 ## Is it healthy? / what's running?
 
 ```bash
 launchctl list | grep -E 'cc-bridge|cc-watcher|clawd.harness'   # alive? (col 1 = PID, col 2 = last exit code)
-lsof -nP -iTCP:7861 -sTCP:LISTEN     # bridge
-lsof -nP -iTCP:8787 -sTCP:LISTEN     # harness
-lsof -nP -iTCP:7851 -sTCP:LISTEN     # backchannel proxy
+lsof -nP -iTCP:7900 -sTCP:LISTEN     # call page (eyes/ears/mouth)
+lsof -nP -iTCP:7861 -sTCP:LISTEN     # bridge (brain)
+lsof -nP -iTCP:8787 -sTCP:LISTEN     # harness (hands)
+lsof -nP -iTCP:7851 -sTCP:LISTEN     # backchannel proxy (private ear)
 tail -f ~/.cache/clawd/cc-watcher.log
 ```
 
