@@ -7,10 +7,10 @@
     <key>ProgramArguments</key>
     <array>
         <string>/opt/homebrew/bin/python3</string>
-        <string>/Users/austingriffith/clawd/clawd-video-chat-cc/cc-watcher.py</string>
+        <string>/Users/austingriffith/clawd/clawd-harness/projects/clawd-video-chat/cc-watcher.py</string>
     </array>
     <key>WorkingDirectory</key>
-    <string>/Users/austingriffith/clawd/clawd-video-chat-cc</string>
+    <string>/Users/austingriffith/clawd/clawd-harness/projects/clawd-video-chat</string>
     <key>EnvironmentVariables</key>
     <dict>
         <key>PATH</key>
