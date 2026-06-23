@@ -174,3 +174,13 @@ JavaScript console.
 - `stream-setup.sh` — older Chrome `--app` + OBS setup, kept for the
   non-slop streaming workflow.
 - `clawdassets/` — avatar video clips.
+- **The `claude -p` call brain** (folded in from the old `claude-code-driver`
+  branch/worktree on 2026-06-22 — now one branch, one directory):
+  - `cc-bridge.py` — WS gateway-protocol bridge on `:7861` that runs `claude -p`
+    as the brain (launchd `com.clawd.cc-bridge`). Three voice trust tiers live
+    here (`VOICE_SYS` guarded / `VOICE_TRUSTED_SYS` full-access / `PRIVATE_SYS`).
+  - `cc-watcher.py` — cross-turn worker watcher (launchd `com.clawd.cc-watcher`).
+  - `cc-cdp.py` — CDP client for the slop Canary on `:9222`.
+  - `deploy/com.clawd.cc-bridge.plist` / `…cc-watcher.plist` — the launchd jobs
+    (ProgramArguments point here, in `projects/clawd-video-chat`).
+  - `SERVICES.md` — the always-on daemons + off-switches.
