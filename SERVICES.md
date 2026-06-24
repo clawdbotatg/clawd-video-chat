@@ -25,7 +25,7 @@ tools around him.
 | Label (launchd) | What it is | Port | Log |
 |---|---|---|---|
 | call page (`server.py`) | clawd's **eyes/ears/mouth** — serves the browser UI on the call: speech recognition ("okay clawd" wake word), TTS, the avatar, the backchannel input box, and writes the STT transcript log. Started by `slop-bridge.sh`, **not** launchd. | `7900` | `/tmp/clawd-vchat-7900.log` |
-| `com.clawd.cc-bridge` | The **brain** — `claude -p` WS bridge that backs the call; spawns a `claude -p` (cwd=`clawd-agent`) per message. Drop-in for the old openclaw gateway. | `7861` | `~/.cache/clawd/cc-bridge.log` |
+| `com.clawd.cc-bridge` | The **brain** — `claude -p` WS bridge that backs the call; spawns a `claude -p` (cwd=`claude-p-agent`) per message. Drop-in for the old openclaw gateway. | `7861` | `~/.cache/clawd/cc-bridge.log` |
 | `com.clawd.cc-watcher` | The **heartbeat** — watches coding workers and pings the brain when one blocks/finishes (see below). | — (WS client) | `~/.cache/clawd/cc-watcher.log` + `/tmp/cc-watcher.log` |
 | clawd-harness | The **worker engine** (clawd's hands) — spawns/observes coding `claude` sessions per repo. (Its own launchd label is `com.clawd.harness`.) | `8787` | harness logs |
 | clawd-backchannel proxy | The **private ear** — lets the browser reach the bridge through the Ed25519 handshake; carries Austin's PRIVATE messages. Started by `slop-bridge.sh`, not launchd. | `7851` | `/tmp/clawd-backchannel.log` |
