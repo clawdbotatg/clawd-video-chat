@@ -75,10 +75,10 @@ load_dotenv()
 # fires. We append it as JSONL here. This is the FULL room transcript — far more
 # than what any single wake turn sends the brain (a wake turn only forwards the
 # short wake-window utterance). The clawd -p brain is told about this file in its
-# soul (~/clawd/clawd-harness/projects/clawd-agent/CLAUDE.md) and can Read it to recall the whole call.
+# soul (~/clawd/clawd-harness/projects/claude-p-agent/CLAUDE.md) and can Read it to recall the whole call.
 # Default lives inside the brain's cwd so it's readable without a permission prompt.
 STT_LOG_PATH = os.path.expanduser(
-    os.environ.get("STT_LOG_PATH", "~/clawd/clawd-harness/projects/clawd-agent/stt-log.jsonl"))
+    os.environ.get("STT_LOG_PATH", "~/clawd/clawd-harness/projects/claude-p-agent/stt-log.jsonl"))
 
 
 def load_stt_rows():
@@ -712,8 +712,8 @@ class Handler(BaseHTTPRequestHandler):
         (input + cache_read + cache_creation = tokens currently sitting in
         the model's context window). That's the number that actually moves
         toward compaction, so it's the one worth showing on the chip."""
-        # The brain's cwd — same default cc-bridge.py uses (~/clawd/clawd-harness/projects/clawd-agent).
-        cwd = os.environ.get("CC_BRIDGE_CWD") or os.path.expanduser("~/clawd/clawd-harness/projects/clawd-agent")
+        # The brain's cwd — same default cc-bridge.py uses (~/clawd/clawd-harness/projects/claude-p-agent).
+        cwd = os.environ.get("CC_BRIDGE_CWD") or os.path.expanduser("~/clawd/clawd-harness/projects/claude-p-agent")
         cwd = os.path.realpath(cwd)
         # claude names a project dir by replacing every non-alphanumeric char
         # in the abspath with '-' (e.g. /Users/x/.clawd-agent →

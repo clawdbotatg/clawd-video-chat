@@ -79,5 +79,5 @@ nothing
 (measured 0% CPU). It's idle-gated so it never wakes the brain mid-reply. Set
 `CC_WATCHER_DRYRUN=1` to make it log intended wakes instead of sending them.
 
-Related: the coding orchestrator itself (`~/clawd/clawd-harness/projects/clawd-agent/code`) and the worker
+Related: the coding orchestrator itself (`~/clawd/clawd-harness/projects/claude-p-agent/tools/local/code`) and the worker
 contract / loop live in the call-brain repo, not here.

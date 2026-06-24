@@ -15,11 +15,13 @@ KEY behaviors (learned the hard way):
   gateway did. Without this, a backchannel-initiated [SAY] never reaches the
   VOICE page's mouth (the voice page is what does TTS), so nothing is spoken.
 - VOICE vs PRIVATE: a backchannel message arrives prefixed "[PRIVATE]"; a voice
-  ("okay clawd…") turn arrives as plain text. Voice turns are PUBLIC — the whole
-  reply must be SPOKEN, so we wrap it in [SAY]…[/SAY] for the page's TTS gate.
-  Backchannel turns are PRIVATE — silent unless the brain itself emits [SAY]
+  ("okay clawd…") turn arrives as plain text. The prefix is a ROUTING signal only
+  — we strip it before the brain sees it (it used to mirror "[PRIVATE]" back,
+  speaking it aloud / cluttering the backchannel). Voice turns are PUBLIC — the
+  whole reply must be SPOKEN, so we wrap it in [SAY]…[/SAY] for the page's TTS
+  gate. Backchannel turns are PRIVATE — silent unless the brain itself emits [SAY]
   (which it does when Austin says "say it out loud").
-- The brain runs with cwd = an EMPOWERING workspace (~/clawd/clawd-harness/projects/clawd-agent) whose
+- The brain runs with cwd = an EMPOWERING workspace (~/clawd/clawd-harness/projects/claude-p-agent) whose
   CLAUDE.md tells clawd the wallet/poker actions ARE his. Do NOT point cwd at the
   harness operator notes — their "wallet is not yours" rule neuters the brain.
 
@@ -41,7 +43,7 @@ import websockets
 PORT = int(os.environ.get("CC_BRIDGE_PORT", "7861"))
 HOST = os.environ.get("CC_BRIDGE_HOST", "127.0.0.1")
 MODEL = os.environ.get("CC_BRIDGE_MODEL", "")  # empty → claude's configured default
-CWD = os.environ.get("CC_BRIDGE_CWD", os.path.expanduser("~/clawd/clawd-harness/projects/clawd-agent"))
+CWD = os.environ.get("CC_BRIDGE_CWD", os.path.expanduser("~/clawd/clawd-harness/projects/claude-p-agent"))
 
 # Per-turn system guidance, on top of the workspace CLAUDE.md persona.
 #
@@ -53,7 +55,7 @@ CWD = os.environ.get("CC_BRIDGE_CWD", os.path.expanduser("~/clawd/clawd-harness/
 # is HARD-DENIED anything value-bearing, secret-exposing, or reaching outside the
 # slop room (host machine, repos, posting as Austin). Those happen ONLY on the
 # backchannel (PRIVATE_SYS), which is token-gated to Austin and cannot be reached
-# from voice. Keep the two prompts in agreement with ~/clawd/clawd-harness/projects/clawd-agent/CLAUDE.md's
+# from voice. Keep the two prompts in agreement with ~/clawd/clawd-harness/projects/claude-p-agent/CLAUDE.md's
 # channel-trust section.
 VOICE_SYS = (
     "You are live on a voice call and this message arrived over the OPEN MIC. "
@@ -94,10 +96,15 @@ VOICE_SYS = (
     "say: no preamble, no 'let me think', no stage directions, no markdown."
 )
 PRIVATE_SYS = (
-    "This message is PRIVATE — from Austin's backchannel, NOT heard by the room. "
-    "Reply privately by default; it will NOT be spoken. Speak on the call ONLY if "
-    "told to ('say it', 'out loud', 'tell the room'): wrap EXACTLY the words for "
-    "the room in [SAY]...[/SAY]. Use tools freely (shell, wallet, slop browser)."
+    "This is Austin's private backchannel — just you and him, NOT heard by the "
+    "room. Your reply is text-only and is NOT spoken; it stays between you two, so "
+    "just answer in plain text. There is NO 'private' marker to add and nothing to "
+    "wrap — do NOT emit [PRIVATE] or any tag; plain text already stays private, and "
+    "a tag would only show up as literal noise here (and, if a turn ever gets "
+    "spoken, get read aloud). The ONLY way to put words on the call is to wrap "
+    "EXACTLY those words in [SAY]...[/SAY], and do that ONLY when Austin tells you "
+    "to ('say it', 'out loud', 'tell the room'). Use tools freely (shell, wallet, "
+    "slop browser)."
 )
 
 # VOICE_TRUSTED_SYS governs the FULL-ACCESS voice path: a voice turn that arrived
@@ -377,6 +384,15 @@ async def handle_req(ws, frame):
             # Voice turns arrive plain (PUBLIC → speak). Backchannel turns are
             # prefixed "[PRIVATE]" (PRIVATE → silent unless the brain emits [SAY]).
             public = not message.lstrip().startswith(PRIVATE_PREFIX)
+            # The "[PRIVATE]" prefix is a ROUTING signal ONLY — strip it so the
+            # brain never SEES the literal token. It used to mirror it back,
+            # speaking "[PRIVATE] …" aloud on voice turns and cluttering the
+            # backchannel; the turn's system prompt (PRIVATE_SYS vs VOICE_SYS) is
+            # what tells the brain which channel it's on, not a tag in the text.
+            prompt = message
+            if not public:
+                p = message.lstrip()
+                prompt = p[len(PRIVATE_PREFIX):].lstrip()
             # FULL-ACCESS voice: the control page sets trusted=true when Austin has
             # the on-screen lock OPEN. Only meaningful on the public/voice path —
             # a backchannel turn is already full-trust. (params.get tolerates the
@@ -384,7 +400,7 @@ async def handle_req(ws, frame):
             trusted = public and bool(params.get("trusted"))
             convo_log("IN ", ("voice+" if trusted else "voice") if public else "priv",
                       session_key, message)
-            asyncio.create_task(run_claude(session_key, run_id, message, public, trusted))
+            asyncio.create_task(run_claude(session_key, run_id, prompt, public, trusted))
     else:
         await ok({})
 
