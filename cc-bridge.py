@@ -168,6 +168,22 @@ def sess(key):
     return sessions.setdefault(key, {"sid": None, "history": []})
 
 
+def _write_brain_session(session_key, sid):
+    """Record the LIVE brain session id so the :7900 context gauge reads OUR
+    session, not whatever transcript is newest in the (shared) cwd project dir —
+    operator/dev `claude` sessions run in the same cwd and would otherwise
+    pollute the gauge. One sentinel file per sessionKey."""
+    try:
+        d = os.path.expanduser("~/.cache/clawd")
+        os.makedirs(d, exist_ok=True)
+        slug = "".join(c if c.isalnum() else "-" for c in session_key)
+        with open(os.path.join(d, f"brain-session-{slug}.json"), "w") as f:
+            json.dump({"sessionKey": session_key, "sessionId": sid,
+                       "cwd": CWD, "ts": int(time.time() * 1000)}, f)
+    except Exception:
+        pass
+
+
 async def send_frame(ws, obj):
     await ws.send(json.dumps(obj))
 
@@ -273,6 +289,7 @@ async def run_claude(session_key, run_id, prompt, public, trusted=False):
             if etype == "system" and evt.get("subtype") == "init":
                 if evt.get("session_id"):
                     s["sid"] = evt["session_id"]
+                    _write_brain_session(session_key, s["sid"])
             elif etype == "stream_event":
                 inner = evt.get("event", {})
                 if inner.get("type") == "content_block_delta":
@@ -289,6 +306,7 @@ async def run_claude(session_key, run_id, prompt, public, trusted=False):
             elif etype == "result":
                 if evt.get("session_id"):
                     s["sid"] = evt["session_id"]
+                    _write_brain_session(session_key, s["sid"])
                 if isinstance(evt.get("result"), str) and len(evt["result"]) > len(text):
                     text = evt["result"]
         await proc.wait()

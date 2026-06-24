@@ -720,12 +720,27 @@ class Handler(BaseHTTPRequestHandler):
         # -Users-x--clawd-agent).
         slug = re.sub(r"[^a-zA-Z0-9]", "-", cwd)
         proj = Path.home() / ".claude" / "projects" / slug
-        files = sorted(proj.glob("*.jsonl"), key=lambda p: p.stat().st_mtime,
-                       reverse=True) if proj.exists() else []
-        if not files:
-            self.send_json({"sessionKey": "claude-p:brain", "exists": False, "tokens": 0})
-            return
-        jsonl = files[0]   # newest = the active resumed session
+        # Prefer the sentinel cc-bridge writes (the LIVE brain session id) so we
+        # read OUR session — NOT whatever transcript is newest in this dir.
+        # Operator/dev `claude` sessions run in the same cwd; "newest file" would
+        # otherwise show their context (and /new could never clear it).
+        jsonl = None
+        session_key = os.environ.get("OPENCLAW_SESSION_KEY") or "agent:clawd:main"
+        sentinel = (Path.home() / ".cache" / "clawd" /
+                    f"brain-session-{''.join(c if c.isalnum() else '-' for c in session_key)}.json")
+        try:
+            sid = json.loads(sentinel.read_text()).get("sessionId")
+            if sid and (proj / f"{sid}.jsonl").exists():
+                jsonl = proj / f"{sid}.jsonl"
+        except Exception:
+            pass
+        if jsonl is None:   # no sentinel yet → fall back to newest file
+            files = sorted(proj.glob("*.jsonl"), key=lambda p: p.stat().st_mtime,
+                           reverse=True) if proj.exists() else []
+            if not files:
+                self.send_json({"sessionKey": "claude-p:brain", "exists": False, "tokens": 0})
+                return
+            jsonl = files[0]
         last_usage = None
         model = None
         try:
