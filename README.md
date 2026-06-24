@@ -11,6 +11,15 @@ WebSocket protocol [`clawd-web-chat`](https://github.com/clawdbotatg/clawd-web-c
 uses. The reply is streamed back as ElevenLabs audio while the avatar
 swaps between idle / listening / chatting / building clips.
 
+> **This is the voice/backchannel _adapter_ for the `claude-p-agent` pattern**
+> (`projects/claude-p-agent`). Its job is exactly what an adapter does in that
+> pattern: take each incoming message (guarded voice · full-access voice · private
+> backchannel), map it to a trust level, and spawn the agent brain — `claude -p`
+> with its cwd set to the `claude-p-agent` workspace (`CC_BRIDGE_CWD`), so the
+> persona (`CLAUDE.md`) and tools load from there. **The brain lives in
+> `claude-p-agent`; this repo is just how clawd hears the room and speaks back.**
+> See `cc-bridge.py` (the engine) and that repo's README for the pattern.
+
 To put clawd on an actual Zoom call:
 
 1. Run this server, open the page in Chrome, grant mic permission.
