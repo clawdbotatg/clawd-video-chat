@@ -134,18 +134,17 @@ else
     say "Clawd server up. Log: $LOG"
 fi
 
-# ── 4b. openclaw connectivity deps ───────────────────────────────────────────
-# clawd-video-chat reaches the openclaw gateway THROUGH clawd-backchannel's WS
-# proxy on :7851 (the proxy does the gateway's Ed25519 nonce handshake
-# server-side; clawd's browser can't). If the proxy is down, clawd loads but
-# shows "gateway disconnected" — so warn loudly.
-if ! lsof -nP -iTCP:7851 -sTCP:LISTEN >/dev/null 2>&1; then
-    warn "clawd-backchannel proxy (:7851) is NOT up — clawd will show 'gateway disconnected'.
-    Start it:  (cd ~/clawd/clawd-backchannel && nohup python3 server.py >/tmp/clawd-backchannel.log 2>&1 &)"
+# ── 4b. brain + backchannel connectivity ─────────────────────────────────────
+# Voice page talks to cc-bridge (:7861) via OPENCLAW_WS_URL in .env. Backchannel
+# proxy (:7851) is only needed for the LAN control page / remote private msgs.
+if ! lsof -nP -iTCP:7861 -sTCP:LISTEN >/dev/null 2>&1; then
+    warn "cc-bridge (:7861) is NOT up — clawd will show 'gateway disconnected'.
+    Install: cp deploy/com.clawd.cc-bridge.plist ~/Library/LaunchAgents/ && launchctl bootstrap gui/\$(id -u) ~/Library/LaunchAgents/com.clawd.cc-bridge.plist
+    Or: CLAUDE_P_AGENT_HOME=~/clawd/clawd-harness/projects/claude-p-agent CC_BRIDGE_CWD=~/clawd/clawd-harness/projects/claude-p-agent python3 cc-bridge.py"
 fi
-if ! lsof -nP -iTCP:18789 -sTCP:LISTEN >/dev/null 2>&1; then
-    warn "openclaw gateway (:18789) is NOT up. It's launchd-managed; try:
-    launchctl kickstart -k gui/\$(id -u)/ai.openclaw.gateway"
+if ! lsof -nP -iTCP:7851 -sTCP:LISTEN >/dev/null 2>&1; then
+    warn "clawd-backchannel proxy (:7851) is NOT up — private LAN backchannel won't work.
+    Start it:  (cd ~/clawd/clawd-backchannel && nohup python3 server.py >/tmp/clawd-backchannel.log 2>&1 &)"
 fi
 
 # ── 5. Quit OBS so JSON edits stick on next launch ───────────────────────────
