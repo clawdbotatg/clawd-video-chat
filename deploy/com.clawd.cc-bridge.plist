@@ -17,6 +17,10 @@
         <string>/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
         <key>CC_BRIDGE_MODEL</key>
         <string>opus</string>
+        <key>CLAUDE_P_AGENT_HOME</key>
+        <string>/Users/austingriffith/clawd/clawd-harness/projects/claude-p-agent</string>
+        <key>CC_BRIDGE_CWD</key>
+        <string>/Users/austingriffith/clawd/clawd-harness/projects/claude-p-agent</string>
     </dict>
     <key>RunAtLoad</key>
     <true/>

@@ -124,7 +124,7 @@ else
     # (call ends up in the harness's voice, not clawd's). Unsetting lets .env win.
     # STT log lives with the brain's workspace (claude-p-agent) so the writer here
     # and the brain's `stt` reader agree. Exported so server.py's setdefault keeps it.
-    (cd "$CLAWD_DIR" && unset PORT ELEVENLABS_VOICE_ID && export CC_BRIDGE_CWD="$HOME/clawd/clawd-harness/projects/claude-p-agent" STT_LOG_PATH="$HOME/clawd/clawd-harness/projects/claude-p-agent/stt-log.jsonl" && nohup python3 server.py >"$LOG" 2>&1 &)
+    (cd "$CLAWD_DIR" && unset PORT ELEVENLABS_VOICE_ID && export CLAUDE_P_AGENT_HOME="$HOME/clawd/clawd-harness/projects/claude-p-agent" CC_BRIDGE_CWD="$HOME/clawd/clawd-harness/projects/claude-p-agent" STT_LOG_PATH="$HOME/clawd/clawd-harness/projects/claude-p-agent/stt-log.jsonl" && nohup python3 server.py >"$LOG" 2>&1 &)
     for _ in $(seq 1 60); do
         curl -sf -m 1 "$CLAWD_URL" >/dev/null && break
         sleep 0.5

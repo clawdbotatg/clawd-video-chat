@@ -6,33 +6,34 @@
 
 ## The big picture: ONE brain, TWO input surfaces, TWO output channels
 
-The "video chat agent" is **not** code in this repo. This repo is clawd's
-**ears and mouth**. The brain is the openclaw **`clawd` agent**:
+The "video chat agent" is **not** the persona in this repo. This repo is clawd's
+**ears and mouth**. The brain is **`claude -p`** via **`cc-bridge.py`**, importing
+[`claude-p-agent`](https://github.com/clawdbotatg/claude-p-agent):
 
-- agent config: `~/.openclaw/openclaw.json` (agent id `clawd`, model
-  `bankr/kimi-k2.6`, most tools denied, skill `browser-automation`)
-- workspace: `~/.openclaw/workspace-clawd/`
-- persona/brain: `~/clawd/clawd-md/` (symlinked into the workspace). The
-  channel rules live in `~/clawd/clawd-md/backchannel.md`; the loaded system
-  prompt is `workspace-clawd/IDENTITY.md`.
+- **Engine** — `CLAUDE_P_AGENT_HOME` → `agent.run_turn()`
+- **Persona + tools** — `CC_BRIDGE_CWD` (a brain clone: `CLAUDE.md`, `tools/`)
+- **Channel policy** — **this repo's** `prompts/*.md`, passed as `append_system_prompt`
+  per turn (voice = public/guarded, voice+ = trusted lock-open, backchannel = private)
 
-Everything below — both input surfaces and both output channels — is **one
-shared openclaw session**. The voice page observes *every* run on that session,
-including ones you start from the backchannel.
+Public/private is **not** in claude-p-agent. The bridge maps input → prompt file.
+
+Everything below — both input surfaces and both output channels — shares **one**
+`claude -p` session (resumed via `--resume` inside cc-bridge).
 
 ```
               ┌────────────── INPUT ──────────────┐
-  "okay clawd…"  (voice, PUBLIC)                  (PRIVATE)  you type at :7850
+  "okay clawd…"  (voice, PUBLIC)                  (PRIVATE)  backchannel :7851
         │                                                        │
-   index.html SR loop                                   clawd-backchannel page
-   → onSend() → WS                                  prepends "[PRIVATE] " + hint
+   index.html SR loop                                   prepends "[PRIVATE]"
+   → onSend() → WS :7861                                → WS :7861
         │                                                        │
-        └──────────────►  openclaw `clawd` session  ◄────────────┘
+        └──────────────►  cc-bridge → run_turn()  ◄────────────┘
                                    │
-                          clawd decides: wrap or don't
+                          append_system_prompt from prompts/
                                    │
               ┌──────────────── OUTPUT ───────────────┐
-        unwrapped reply                         [PRIVATE]…[/PRIVATE] reply
+        voice path: [SAY]…[/SAY] → TTS          backchannel: text only
+        (public — room hears)                   (unless brain emits [SAY])
               │                                         │
    voice page speaks via TTS                  voice page STRIPS it from TTS
    → the ROOM hears it (PUBLIC)               → silent. only YOU see it (PRIVATE)

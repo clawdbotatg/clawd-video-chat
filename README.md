@@ -11,14 +11,10 @@ WebSocket protocol [`clawd-web-chat`](https://github.com/clawdbotatg/clawd-web-c
 uses. The reply is streamed back as ElevenLabs audio while the avatar
 swaps between idle / listening / chatting / building clips.
 
-> **This is the voice/backchannel _adapter_ for the `claude-p-agent` pattern**
-> (`projects/claude-p-agent`). Its job is exactly what an adapter does in that
-> pattern: take each incoming message (guarded voice · full-access voice · private
-> backchannel), map it to a trust level, and spawn the agent brain — `claude -p`
-> with its cwd set to the `claude-p-agent` workspace (`CC_BRIDGE_CWD`), so the
-> persona (`CLAUDE.md`) and tools load from there. **The brain lives in
-> `claude-p-agent`; this repo is just how clawd hears the room and speaks back.**
-> See `cc-bridge.py` (the engine) and that repo's README for the pattern.
+> **Voice/backchannel adapter for [claude-p-agent](https://github.com/clawdbotatg/claude-p-agent).**
+> This repo is the face (mic, TTS, avatar, backchannel). The **brain** is a separate
+> clone of `claude-p-agent` with your `CLAUDE.md`. **Public/private/trust policy
+> lives here** — in `cc-bridge.py` + `prompts/`, not in the engine.
 
 To put clawd on an actual Zoom call:
 
@@ -30,6 +26,43 @@ To put clawd on an actual Zoom call:
    you want clawd to float on your real-world background.
 
 ## Setup
+
+**Two repos:**
+
+1. **Brain** — clone [claude-p-agent](https://github.com/clawdbotatg/claude-p-agent), copy `CLAUDE.md.example` → `CLAUDE.md`, add your tools.
+2. **Face** — this repo (UI + `cc-bridge.py` adapter).
+
+```bash
+git clone https://github.com/clawdbotatg/clawd-video-chat
+cd clawd-video-chat
+cp .env.example .env
+# set OPENCLAW_WS_URL=ws://127.0.0.1:7861
+# set CLAUDE_P_AGENT_HOME and CC_BRIDGE_CWD to your brain clone
+
+pip install websockets   # cc-bridge only dependency
+python3 cc-bridge.py &   # brain WS on :7861
+python3 server.py        # UI on :7900 → http://127.0.0.1:7900
+```
+
+Channel policy (public voice vs private backchannel vs trusted lock-open voice) is
+in **`prompts/`** — see `INPUTS-AND-CHANNELS.md`.
+
+No pip deps for `server.py`. Append `?dev=1` for the debug chat panel.
+
+### Production (Austin's slop rig)
+
+`./slop-bridge.sh` starts server + backchannel proxy + OBS wiring. `cc-bridge` runs
+under launchd (`deploy/com.clawd.cc-bridge.plist`) with `CLAUDE_P_AGENT_HOME` and
+`CC_BRIDGE_CWD` set to the brain clone.
+
+## Legacy: openclaw gateway
+
+Older setups pointed the UI at openclaw on `:18789`. The brain is **`cc-bridge.py`**
+(`claude -p`) now. If you still use openclaw for something else, leave it alone — but
+the call UI should use `OPENCLAW_WS_URL=ws://127.0.0.1:7861`.
+
+<details>
+<summary>Old openclaw pairing steps (not needed for cc-bridge)</summary>
 
 ```bash
 git clone https://github.com/clawdbotatg/clawd-video-chat
@@ -72,13 +105,19 @@ openclaw devices list          # grab the pending request id
 openclaw devices approve <id>
 ```
 
-## The brain
+</details>
 
-This UI talks to whatever session the gateway is configured to load.
-Wire [`clawd-md`](https://github.com/clawdbotatg/clawd-md) into that
-session as your system prompt / persona — same as you would for any
-other clawd front-end. (See clawd-md's README for how its files are
-loaded into the agent.)
+## The brain (claude-p-agent)
+
+Persona and tools live in **`CC_BRIDGE_CWD`** — your brain clone's `CLAUDE.md` and
+`tools/`. This repo only adds per-channel prompts (`prompts/voice.md`, etc.) via
+`append_system_prompt` when spawning `run_turn()`.
+
+| Channel | How it arrives | Prompt |
+|---|---|---|
+| Voice (guarded) | wake word → plain text | `prompts/voice.md` |
+| Voice (lock open) | plain + `trusted=true` | `prompts/voice-trusted.md` |
+| Backchannel | `[PRIVATE]` prefix stripped | `prompts/backchannel.md` |
 
 ## Wake word
 
