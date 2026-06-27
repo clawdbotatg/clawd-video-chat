@@ -60,10 +60,11 @@ biases clawd (via prefix + hint) to wrap the reply.
 
 ## Input surface 2 — the backchannel (PRIVATE, your ear only)
 
-- Page: **`clawd-backchannel/index.html`** (a *different* repo, `~/clawd/clawd-backchannel`).
+- Page: **`backchannel/index.html`** (folded into this repo from the former
+  standalone `clawd-backchannel` repo; runs under launchd `com.clawd.backchannel`).
 - URL: `http://<lan-ip>:7850/?k=<BACKCHANNEL_TOKEN>`
   - LAN IP is **DHCP** — re-check with `ipconfig getifaddr en0` (was .56, .75…).
-  - token in `~/clawd/clawd-backchannel/.env` (`BACKCHANNEL_TOKEN`).
+  - token in `backchannel/.env` (`BACKCHANNEL_TOKEN`).
 - It prepends **`[PRIVATE] `** to your text and appends a hint telling clawd to
   wrap his ENTIRE reply (`PRIVATE_PREFIX` / `PRIVATE_REPLY_HINT` ~L211–220).
 - clawd, per `IDENTITY.md`, replies **wrapped in the private tags** → the voice
@@ -73,17 +74,18 @@ biases clawd (via prefix + hint) to wrap the reply.
 
 ### Why a relay process exists (:7851)
 
-The gateway binds **loopback only** and needs an Ed25519 nonce handshake the
-browser can't do. `clawd-backchannel/server.py` is a pure **relay/proxy**:
-it does the gateway handshake server-side and forwards frames. It does **not**
+The bridge/gateway binds **loopback only** and needs an Ed25519 nonce handshake
+the browser can't do. `backchannel/server.py` is a pure **relay/proxy**:
+it does the handshake server-side and forwards frames. It does **not**
 tag anything `[PRIVATE]` — that's the page's job. The voice page (:7900) also
-reaches the gateway *through* this proxy. Without it → "gateway disconnected".
+reaches the bridge *through* this proxy (its `OPENCLAW_WS_URL` points at :7851).
+Without it → "gateway disconnected".
 
 | port | what | where |
 |---|---|---|
 | 7900 | voice page (this repo) + TTS proxy | `clawd-video-chat/server.py` |
-| 7850 | backchannel **page** (prepends `[PRIVATE]`) | `clawd-backchannel/` |
-| 7851 | backchannel **relay** to the loopback gateway | `clawd-backchannel/server.py` |
+| 7850 | backchannel **page** (prepends `[PRIVATE]`) | `backchannel/` (this repo) |
+| 7851 | backchannel **relay** to the loopback bridge | `backchannel/server.py` |
 | 18789 | openclaw gateway (loopback) | launchd `ai.openclaw.gateway` |
 
 ## Output channels — wrap or don't (enforced in the voice page)
@@ -116,7 +118,7 @@ describe them in words ("the private wrapper"), never the raw tokens.
 | Single submit path | `index.html` ~L2841 `onSend()` |
 | WS to gateway | `index.html` ~L2406 `new WebSocket` |
 | TTS private-strip | `index.html` ~L3413 `_sanitizeForTts()` |
-| Backchannel prefix + hint | `clawd-backchannel/index.html` ~L211–220 |
-| Gateway relay handshake | `clawd-backchannel/server.py` `_gateway_handshake()` |
+| Backchannel prefix + hint | `backchannel/index.html` ~L211–220 |
+| Gateway relay handshake | `backchannel/server.py` `_gateway_handshake()` |
 | Brain / persona / channel rules | `~/clawd/clawd-md/backchannel.md`, `workspace-clawd/IDENTITY.md` |
 | Agent model + tool denies | `~/.openclaw/openclaw.json` (agent id `clawd`) |

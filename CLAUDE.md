@@ -42,10 +42,13 @@ user to double-click the desktop button. Steps:
 2. **Deps clawd talks to** (`slop-bridge.sh` warns if down):
    - **openclaw gateway** — launchd `ai.openclaw.gateway`, `ws://127.0.0.1:18789`.
      Restart: `launchctl kickstart -k gui/$(id -u)/ai.openclaw.gateway`.
-   - **clawd-backchannel proxy** on **`:7851`** — clawd reaches the gateway
-     *through* it (it does the gateway's Ed25519 nonce handshake server-side; the
-     browser can't). Start: `(cd ~/clawd/clawd-backchannel && nohup python3
-     server.py >/tmp/clawd-backchannel.log 2>&1 &)`. Without it → "gateway
+   - **backchannel proxy** on **`:7851`** (page on `:7850`) — clawd reaches the
+     bridge/gateway *through* it (it does the Ed25519 nonce handshake server-side;
+     the browser can't). **Folded into this repo at `backchannel/`** (was the
+     standalone `clawd-backchannel` repo). Runs under launchd `com.clawd.backchannel`
+     (`deploy/com.clawd.backchannel.plist`): `launchctl kickstart -k
+     gui/$(id -u)/com.clawd.backchannel`. Or manually: `(cd backchannel && nohup
+     python3 server.py >/tmp/clawd-backchannel.log 2>&1 &)`. Without it → "gateway
      disconnected". (See `gateway-via-backchannel-proxy` memory.)
 3. **Run it:** `./slop-bridge.sh` (self-contained — strips a stray `PORT`,
    self-heals the OBS bind, opens slop in the right Canary profile). It:
@@ -78,7 +81,7 @@ user to double-click the desktop button. Steps:
   now `unset PORT`s before launching `server.py` so `.env`'s 7900 applies.
 - This Mac's **LAN IP is DHCP** and has changed (was `.56`, now check
   `ipconfig getifaddr en0`). The backchannel page is
-  `http://<lan-ip>:7850/?k=<BACKCHANNEL_TOKEN>` (token in `clawd-backchannel/.env`).
+  `http://<lan-ip>:7850/?k=<BACKCHANNEL_TOKEN>` (token in `backchannel/.env`).
 
 ## `slop-bridge-stop.sh` — teardown
 
@@ -174,6 +177,16 @@ JavaScript console.
 - `stream-setup.sh` — older Chrome `--app` + OBS setup, kept for the
   non-slop streaming workflow.
 - `clawdassets/` — avatar video clips.
+- **`backchannel/`** — the **private side-channel chat** (folded in from the
+  standalone `clawd-backchannel` repo on 2026-06-27). Serves a phone-friendly
+  chat page on `:7850` and a WS reverse-proxy on `:7851` that does the gateway
+  Ed25519 handshake server-side and relays browser ↔ the bridge (`cc-bridge`
+  `:7861`, via `OPENCLAW_WS_URL` in `backchannel/.env`). Prepends `[PRIVATE]` to
+  every message → the brain replies text-only (silent on the call unless it emits
+  `[SAY]`). POSTs `/trigger-stop` and `/trigger-ptt-{down,up}` cross-origin to the
+  voice page (`:7900`). Runs under launchd `com.clawd.backchannel`
+  (`deploy/com.clawd.backchannel.plist`). `server.py` + `index.html` + its own
+  `README.md`; gitignored runtime: `backchannel/{.env,shortcuts.json}`.
 - **The `claude -p` call brain** (folded in from the old `claude-code-driver`
   branch/worktree on 2026-06-22 — now one branch, one directory):
   - `cc-bridge.py` — WS gateway-protocol bridge on `:7861` that runs `claude -p`
@@ -181,6 +194,7 @@ JavaScript console.
     here (`VOICE_SYS` guarded / `VOICE_TRUSTED_SYS` full-access / `PRIVATE_SYS`).
   - `cc-watcher.py` — cross-turn worker watcher (launchd `com.clawd.cc-watcher`).
   - `cc-cdp.py` — CDP client for the slop Canary on `:9222`.
-  - `deploy/com.clawd.cc-bridge.plist` / `…cc-watcher.plist` — the launchd jobs
-    (ProgramArguments point here, in `projects/clawd-video-chat`).
+  - `deploy/com.clawd.cc-bridge.plist` / `…cc-watcher.plist` /
+    `…backchannel.plist` — the launchd jobs (ProgramArguments point here, in
+    `projects/clawd-video-chat`).
   - `SERVICES.md` — the always-on daemons + off-switches.

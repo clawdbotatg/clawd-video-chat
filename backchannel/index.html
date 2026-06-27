@@ -1,0 +1,1462 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<meta name="theme-color" content="#0a0a0c" />
+<meta name="apple-mobile-web-app-capable" content="yes" />
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+<title>clawd ◂ backchannel</title>
+<style>
+  :root {
+    --bg: #0a0a0c;
+    --bg-soft: #15151a;
+    --line: #2a2a32;
+    --text: #e8e8ec;
+    --muted: #8a8a96;
+    --priv: #4ea1ff;
+    --priv-bg: rgba(78, 161, 255, 0.10);
+    --voice: #f0a040;
+    --voice-bg: rgba(240, 160, 64, 0.08);
+    --ok: #5dd66f;
+    --warn: #f0a040;
+    --bad: #e85a5a;
+    --you-bg: #1d2a3a;
+    --them-bg: #181820;
+  }
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html, body { margin: 0; padding: 0; background: var(--bg); color: var(--text); font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; }
+  html, body { height: 100%; overscroll-behavior-y: contain; }
+  body { display: flex; flex-direction: column; min-height: 100dvh; }
+
+  header {
+    display: flex; align-items: center; gap: 10px;
+    padding: 10px 14px;
+    padding-top: calc(10px + env(safe-area-inset-top));
+    background: var(--bg-soft);
+    border-bottom: 1px solid var(--line);
+    flex: 0 0 auto;
+  }
+  header .title { font-weight: 600; font-size: 15px; letter-spacing: 0.3px; }
+  header .session { font-size: 11px; color: var(--muted); font-family: ui-monospace, Menlo, monospace; }
+  header .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); flex: 0 0 auto; }
+  header .dot.ok { background: var(--ok); }
+  header .dot.bad { background: var(--bad); }
+  header .dot.connecting { background: var(--warn); animation: pulse 1.2s infinite ease-in-out; }
+  @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.35; } }
+  header .spacer { flex: 1; }
+  header button {
+    background: transparent; color: var(--muted); border: 1px solid var(--line);
+    padding: 6px 10px; font-size: 12px; border-radius: 8px; cursor: pointer;
+  }
+  header button:active { background: var(--bg); color: var(--text); }
+
+  #log {
+    flex: 1 1 auto;
+    overflow-y: auto;
+    padding: 14px;
+    display: flex; flex-direction: column; gap: 10px;
+    scroll-behavior: smooth;
+  }
+  #log .empty {
+    color: var(--muted); font-size: 14px; text-align: center;
+    padding: 24px 16px; line-height: 1.5;
+  }
+  #log .empty code { color: var(--text); background: var(--bg-soft); padding: 1px 5px; border-radius: 4px; font-size: 12px; }
+
+  .msg {
+    max-width: 88%;
+    padding: 8px 12px;
+    border-radius: 12px;
+    font-size: 15px;
+    line-height: 1.4;
+    white-space: pre-wrap;
+    word-wrap: break-word;
+  }
+  .msg .tag {
+    display: block;
+    font-size: 10px;
+    color: var(--muted);
+    letter-spacing: 0.6px;
+    text-transform: uppercase;
+    margin-bottom: 3px;
+    font-weight: 600;
+  }
+  .msg.user-private { align-self: flex-end; background: var(--you-bg); border: 1px solid rgba(78,161,255,0.25); }
+  .msg.user-private .tag { color: var(--priv); }
+  .msg.user-voice { align-self: flex-end; background: var(--bg-soft); border: 1px dashed var(--line); color: var(--muted); }
+  .msg.user-voice .tag { color: var(--voice); }
+  .msg.assistant { align-self: flex-start; background: var(--them-bg); border: 1px solid var(--line); }
+  .msg.assistant .segments { display: flex; flex-direction: column; gap: 6px; }
+  .msg.assistant .seg { display: block; padding: 4px 8px; border-radius: 8px; }
+  .msg.assistant .seg.private { background: var(--priv-bg); border-left: 2px solid var(--priv); }
+  .msg.assistant .seg.spoken { background: var(--voice-bg); border-left: 2px solid var(--voice); }
+  .msg.assistant .seg .seg-tag {
+    display: block; font-size: 10px; letter-spacing: 0.6px;
+    text-transform: uppercase; font-weight: 600; margin-bottom: 2px;
+  }
+  .msg.assistant .seg.private .seg-tag { color: var(--priv); }
+  .msg.assistant .seg.spoken .seg-tag { color: var(--voice); }
+  /* rendered markdown inside a segment (white-space: normal so block tags don't
+     inherit the bubble's pre-wrap and double-space) */
+  .msg.assistant .seg .md { white-space: normal; }
+  .msg.assistant .seg .md p { margin: 0 0 6px; }
+  .msg.assistant .seg .md p:last-child { margin-bottom: 0; }
+  .msg.assistant .seg .md ul, .msg.assistant .seg .md ol { margin: 4px 0; padding-left: 20px; }
+  .msg.assistant .seg .md li { margin: 2px 0; }
+  .msg.assistant .seg .md h1, .msg.assistant .seg .md h2,
+  .msg.assistant .seg .md h3, .msg.assistant .seg .md h4 {
+    margin: 6px 0 4px; font-size: 1.05em; font-weight: 700;
+  }
+  .msg.assistant .seg .md code {
+    background: rgba(127,127,127,0.18); padding: 1px 4px; border-radius: 4px;
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0.88em;
+    word-break: break-word;
+  }
+  .msg.assistant .seg .md pre.cb {
+    background: rgba(127,127,127,0.14); padding: 8px 10px; border-radius: 6px;
+    overflow-x: auto; margin: 6px 0; white-space: pre-wrap; word-break: break-word;
+  }
+  .msg.assistant .seg .md pre.cb code { background: none; padding: 0; font-size: 0.85em; }
+  .msg.assistant .seg .md a { color: var(--voice); text-decoration: underline; }
+  .msg.assistant .seg .md strong { font-weight: 700; }
+  .msg.assistant .seg .md em { font-style: italic; }
+  .msg.assistant .meta { font-size: 11px; color: var(--muted); margin-top: 6px; }
+  .msg.system { align-self: center; background: transparent; color: var(--muted); font-size: 12px; font-style: italic; max-width: 100%; }
+  .msg.tool { align-self: flex-start; background: var(--bg-soft); border: 1px solid var(--line); font-family: ui-monospace, Menlo, monospace; font-size: 12px; color: var(--muted); padding: 6px 10px; max-width: 92%; }
+  .msg.tool .tag { color: var(--voice); }
+
+  /* live process: thinking + tool cards inside an assistant turn */
+  .msg.assistant .thinking, .msg.assistant .tools { display: flex; flex-direction: column; gap: 6px; }
+  .msg.assistant .thinking:empty, .msg.assistant .tools:empty { display: none; }
+  .think-card, .tool-card { border: 1px solid var(--line); border-radius: 8px; background: var(--bg); overflow: hidden; }
+  .think-card .hdr, .tool-card .hdr {
+    display: flex; align-items: center; gap: 6px; padding: 5px 8px; cursor: pointer;
+    font-family: ui-monospace, Menlo, monospace; font-size: 12px; color: var(--muted);
+  }
+  .think-card .label { color: var(--priv); text-transform: uppercase; letter-spacing: 0.5px; font-size: 10px; font-weight: 600; flex: 0 0 auto; }
+  .tool-card .name { color: var(--voice); font-weight: 600; flex: 0 0 auto; }
+  .think-card .preview, .tool-card .preview { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; opacity: 0.85; }
+  .tool-card .stat { flex: 0 0 auto; font-size: 12px; }
+  .tool-card .stat.ok { color: var(--ok); }
+  .tool-card .stat.bad { color: var(--bad); }
+  .think-card .chev, .tool-card .chev { flex: 0 0 auto; transition: transform 0.15s; opacity: 0.6; }
+  .think-card.open .chev, .tool-card.open .chev { transform: rotate(90deg); }
+  .think-card .body, .tool-card .body {
+    display: none; padding: 6px 8px; border-top: 1px solid var(--line);
+    white-space: pre-wrap; word-break: break-word;
+    font-family: ui-monospace, Menlo, monospace; font-size: 12px; color: var(--text);
+    max-height: 240px; overflow-y: auto;
+  }
+  .think-card.open .body, .tool-card.open .body { display: block; }
+  .msg.assistant .meta .spin {
+    display: inline-block; width: 8px; height: 8px; border-radius: 50%;
+    background: var(--priv); margin-right: 6px; vertical-align: middle;
+    animation: pulse 1.2s infinite ease-in-out;
+  }
+
+  /* Quick-fill shortcut buttons (templates) — a horizontally scrollable row
+     directly above the composer, with an edit (✎) button pinned at the right.
+     The shortcuts themselves are stored in localStorage and managed via the
+     editor modal (#scModal). */
+  #shortcutbar {
+    flex: 0 0 auto;
+    display: flex; align-items: center; gap: 6px;
+    padding: 8px 12px 0;
+    background: var(--bg-soft);
+    border-top: 1px solid var(--line);
+  }
+  #shortcuts {
+    flex: 1 1 auto;
+    display: flex; gap: 6px;
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+    scrollbar-width: none;
+  }
+  #shortcuts::-webkit-scrollbar { display: none; }
+  #shortcuts button {
+    flex: 0 0 auto;
+    background: var(--bg); color: var(--text);
+    border: 1px solid var(--line); border-radius: 999px;
+    padding: 6px 12px;
+    font-size: 13px; font-family: inherit;
+    cursor: pointer; white-space: nowrap;
+  }
+  #shortcuts button:hover { border-color: var(--priv); }
+  #shortcuts button:active { background: var(--bg-soft); }
+  #scEdit {
+    flex: 0 0 auto;
+    background: var(--bg); color: var(--muted);
+    border: 1px solid var(--line); border-radius: 999px;
+    width: 30px; height: 30px;
+    font-size: 14px; cursor: pointer; line-height: 1;
+  }
+  #scEdit:hover { border-color: var(--priv); color: var(--text); }
+
+  /* ── shortcut editor modal ───────────────────────────────────────────── */
+  #scModal {
+    position: fixed; inset: 0; z-index: 50;
+    background: rgba(0,0,0,0.6);
+    display: flex; align-items: center; justify-content: center;
+    padding: 16px;
+  }
+  #scModal[hidden] { display: none; }
+  .sc-card {
+    width: 100%; max-width: 860px; max-height: 85vh;
+    display: flex; flex-direction: column;
+    background: var(--bg-soft); color: var(--text);
+    border: 1px solid var(--line); border-radius: 14px;
+    overflow: hidden;
+  }
+  .sc-head {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 12px 14px; border-bottom: 1px solid var(--line);
+    font-weight: 600;
+  }
+  .sc-head button { background: none; border: none; color: var(--muted); font-size: 16px; cursor: pointer; }
+  #scList {
+    padding: 12px 14px; overflow-y: auto; flex: 1 1 auto;
+    display: flex; flex-direction: column; gap: 10px;
+  }
+  .sc-row {
+    border: 1px solid var(--line); border-radius: 10px;
+    padding: 8px; background: var(--bg);
+    display: flex; flex-direction: column; gap: 6px;
+  }
+  .sc-row.dragging { opacity: 0.45; }
+  .sc-row.drop-before { border-top-color: var(--priv); box-shadow: 0 -2px 0 var(--priv); }
+  .sc-row.drop-after  { border-bottom-color: var(--priv); box-shadow: 0 2px 0 var(--priv); }
+  .sc-row-top { display: flex; gap: 6px; align-items: center; }
+  .sc-grip {
+    flex: 0 0 auto; cursor: grab; user-select: none;
+    color: var(--muted); font-size: 16px; line-height: 1;
+    padding: 0 4px; align-self: stretch; display: flex; align-items: center;
+  }
+  .sc-grip:active { cursor: grabbing; }
+  .sc-label, .sc-text {
+    background: var(--bg-soft); color: var(--text);
+    border: 1px solid var(--line); border-radius: 8px;
+    padding: 7px 9px; font-size: 14px; font-family: inherit; outline: none;
+  }
+  .sc-label { flex: 1; }
+  .sc-text { width: 100%; resize: vertical; min-height: 38px; line-height: 1.35; }
+  .sc-label:focus, .sc-text:focus { border-color: var(--priv); }
+  .sc-del {
+    flex: 0 0 auto; background: none; color: var(--muted);
+    border: 1px solid var(--line); border-radius: 8px;
+    width: 32px; height: 32px; cursor: pointer; font-size: 14px;
+  }
+  .sc-del:hover { color: var(--bad); border-color: var(--bad); }
+  .sc-add {
+    margin: 0 14px 12px; padding: 9px;
+    background: var(--bg); color: var(--text);
+    border: 1px dashed var(--line); border-radius: 10px;
+    cursor: pointer; font-size: 14px; font-family: inherit;
+  }
+  .sc-add:hover { border-color: var(--priv); }
+  .sc-actions {
+    display: flex; justify-content: flex-end; gap: 8px;
+    padding: 12px 14px; border-top: 1px solid var(--line);
+  }
+  .sc-btn {
+    padding: 8px 16px; border-radius: 10px; font-size: 14px; font-weight: 600;
+    cursor: pointer; font-family: inherit; border: 1px solid var(--line);
+  }
+  .sc-btn.ghost { background: var(--bg); color: var(--text); }
+  .sc-btn.primary { background: var(--priv); color: white; border-color: var(--priv); }
+
+  #composer {
+    flex: 0 0 auto;
+    display: flex; align-items: flex-end; gap: 8px;
+    padding: 10px 12px;
+    padding-bottom: calc(10px + env(safe-area-inset-bottom));
+    background: var(--bg-soft);
+  }
+  #input {
+    flex: 1; resize: none;
+    background: var(--bg); color: var(--text);
+    border: 1px solid var(--line);
+    border-radius: 12px;
+    padding: 10px 12px;
+    font-size: 16px; /* >=16px prevents iOS auto-zoom on focus */
+    line-height: 1.35;
+    min-height: 44px; max-height: 200px;
+    font-family: inherit;
+    outline: none;
+  }
+  #input:focus { border-color: var(--priv); }
+  #send {
+    flex: 0 0 auto;
+    height: 44px; padding: 0 16px;
+    background: var(--priv); color: white;
+    border: none; border-radius: 12px;
+    font-size: 15px; font-weight: 600;
+    cursor: pointer;
+  }
+  #send:disabled { background: var(--line); color: var(--muted); }
+  #send.stop { background: var(--bad); }
+
+  /* Push-to-talk — hold to make clawd listen on the CALL (public/room channel,
+     hence --voice orange, not the private blue). Press starts capture on the
+     voice page; release submits it. touch-action:none so a hold-drag on mobile
+     doesn't scroll instead of registering the press. */
+  #pttbar {
+    flex: 0 0 auto;
+    padding: 8px 12px 0;
+    background: var(--bg-soft);
+  }
+  #ptt {
+    width: 100%;
+    height: 48px;
+    background: var(--bg); color: var(--voice);
+    border: 1px solid var(--voice); border-radius: 12px;
+    font-size: 15px; font-weight: 600; font-family: inherit;
+    cursor: pointer; user-select: none; -webkit-user-select: none;
+    touch-action: none;
+    transition: background 0.08s, color 0.08s;
+  }
+  #ptt.held {
+    background: var(--voice); color: #1a1208;
+    box-shadow: 0 0 0 4px color-mix(in srgb, var(--voice) 30%, transparent);
+  }
+
+  .err { color: var(--bad); font-size: 13px; padding: 10px 14px; background: rgba(232,90,90,0.08); border-top: 1px solid rgba(232,90,90,0.3); }
+</style>
+</head>
+<body>
+  <header>
+    <span id="statusDot" class="dot connecting" title="connecting"></span>
+    <div>
+      <div class="title">backchannel</div>
+      <div class="session" id="sessionLabel">…</div>
+    </div>
+    <div class="spacer"></div>
+    <button id="btnReload" title="reload history">↻</button>
+  </header>
+
+  <div id="log"><div class="empty">connecting…</div></div>
+  <div id="errBar" class="err" style="display:none"></div>
+
+  <div id="shortcutbar">
+    <div id="shortcuts"></div>
+    <button id="scEdit" type="button" title="edit shortcuts">✎</button>
+  </div>
+  <div id="pttbar">
+    <button id="ptt" type="button">🎙 hold to talk (or numpad ".") — clawd listens to the room</button>
+  </div>
+  <div id="composer">
+    <textarea id="input" rows="1" placeholder="type — sent privately" autocomplete="off" autocorrect="on" autocapitalize="sentences" spellcheck="true"></textarea>
+    <button id="send">send</button>
+  </div>
+
+  <!-- Shortcut editor — add / edit / delete the quick-fill templates. -->
+  <div id="scModal" hidden>
+    <div class="sc-card">
+      <div class="sc-head">
+        <span>Shortcuts</span>
+        <button id="scClose" type="button" title="close">✕</button>
+      </div>
+      <div id="scList"></div>
+      <button id="scAdd" type="button" class="sc-add">＋ Add shortcut</button>
+      <div class="sc-actions">
+        <button id="scReset" type="button" class="sc-btn ghost" style="margin-right:auto">Reset</button>
+        <button id="scCancel" type="button" class="sc-btn ghost">Cancel</button>
+        <button id="scSave" type="button" class="sc-btn primary">Save</button>
+      </div>
+    </div>
+  </div>
+
+<script>
+//
+//  clawd-backchannel — a third WebSocket client into the same OpenClaw
+//  session that clawd-video-chat (voice) and clawd-web-chat (typed) use.
+//
+//  Wire shape:
+//    - Connect to gateway WS, handshake with Ed25519-signed device payload.
+//    - chat.history on load (limit 100).
+//    - chat.send prefixes the user's text with "[PRIVATE] " so clawd knows
+//      to reply privately by wrapping in [PRIVATE]...[/PRIVATE].
+//    - Render the full session — voice turns and private turns both —
+//      with visual distinction so the user can see what's happening on
+//      the call too.
+//
+
+const $log = document.getElementById("log");
+const $input = document.getElementById("input");
+const $send = document.getElementById("send");
+const $statusDot = document.getElementById("statusDot");
+const $sessionLabel = document.getElementById("sessionLabel");
+const $errBar = document.getElementById("errBar");
+const $btnReload = document.getElementById("btnReload");
+const $shortcuts = document.getElementById("shortcuts");
+
+// ════════════════════════════════════════════════════════════════════════
+//  SHORTCUTS — quick-fill message templates (the row of buttons above the box)
+//  ----------------------------------------------------------------------
+//  Each shortcut is { label: "button title", text: "what fills the box" }.
+//  Clicking a button writes `text` into the message box, focuses it, and puts
+//  the cursor at the end so you can keep typing. NOTHING is sent until you hit
+//  send — they're just starting points.
+//
+//  Manage them IN THE PAGE via the ✎ button on the shortcut row (add / edit /
+//  delete / reorder is implicit by order). Your set is saved in this browser's
+//  localStorage, so the list below is only the DEFAULT seed used on a fresh
+//  browser (or after "Reset"). Edit DEFAULT_SHORTCUTS to change that seed.
+// ════════════════════════════════════════════════════════════════════════
+const DEFAULT_SHORTCUTS = [
+  { label: "Say out loud", text: "say this out loud to the room: " },
+  { label: "Tell the room", text: "tell the room " },
+  { label: "Ask them",      text: "ask them " },
+  { label: "Hold on",       text: "say out loud: hold on one sec" },
+];
+const SC_STORE_KEY = "bc_shortcuts_v1";
+
+// Source of truth is the SERVER (GET/POST /shortcuts) so the list survives the
+// LAN IP changing — localStorage is keyed by origin, so a new DHCP IP looked
+// like a fresh browser and orphaned the saved shortcuts. We keep localStorage
+// as an offline cache for an instant first paint, then reconcile with the
+// server on boot (syncShortcutsFromServer).
+function normalizeShortcuts(arr) {
+  if (!Array.isArray(arr)) return null;
+  return arr
+    .filter(s => s && typeof s.text === "string")
+    .map(s => ({ label: String(s.label || "").trim() || s.text.trim().slice(0, 20), text: s.text }));
+}
+function loadShortcuts() {
+  try {
+    const arr = normalizeShortcuts(JSON.parse(localStorage.getItem(SC_STORE_KEY)));
+    if (arr) return arr;
+  } catch (_) {}
+  return DEFAULT_SHORTCUTS.map(s => ({ ...s }));
+}
+function cacheShortcutsLocal() {
+  try { localStorage.setItem(SC_STORE_KEY, JSON.stringify(shortcuts)); } catch (_) {}
+}
+function persistShortcuts() {
+  cacheShortcutsLocal();                       // instant local cache
+  // Push to the server so it survives IP changes / other devices.
+  try {
+    fetch("/shortcuts" + window.location.search, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(shortcuts),
+    }).catch(() => {});
+  } catch (_) {}
+}
+// Reconcile with the server. If the server has a list, it wins (and we cache it
+// locally). If the server is empty but THIS browser still has shortcuts (e.g. a
+// desktop that kept its old localStorage), migrate them UP so they're saved for
+// good. Returns true if the in-memory list changed.
+async function syncShortcutsFromServer() {
+  let server;
+  try {
+    const r = await fetch("/shortcuts" + window.location.search);
+    if (!r.ok) return false;
+    server = normalizeShortcuts(await r.json());
+  } catch (_) { return false; }
+  if (server && server.length) {
+    shortcuts = server;
+    cacheShortcutsLocal();
+    return true;
+  }
+  // Server empty → migrate whatever this browser has (defaults or recovered).
+  persistShortcuts();
+  return false;
+}
+let shortcuts = loadShortcuts();
+
+function fillShortcut(text) {
+  // Append to whatever's already in the box (don't clobber). Add a single
+  // space between if the existing text and the template would otherwise run
+  // together; if the box is empty this just sets it.
+  const cur = $input.value;
+  const sep = (cur && !/\s$/.test(cur) && !/^\s/.test(text)) ? " " : "";
+  $input.value = cur + sep + text;
+  autosize();
+  $input.focus();
+  const end = $input.value.length;
+  try { $input.setSelectionRange(end, end); } catch (_) {}
+}
+
+function renderShortcuts() {
+  $shortcuts.innerHTML = "";
+  for (const s of shortcuts) {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.textContent = s.label;
+    b.title = s.text;
+    b.addEventListener("click", () => fillShortcut(s.text));
+    $shortcuts.appendChild(b);
+  }
+}
+renderShortcuts();
+
+// ── editor modal ──────────────────────────────────────────────────────────
+const $scModal = document.getElementById("scModal");
+const $scList  = document.getElementById("scList");
+
+// Drag-to-reorder state. `dragRow` is the row currently being dragged (set by a
+// grip's dragstart). The list's dragover moves it live so the DOM order is the
+// new order on drop — saveEditor reads DOM order, so no extra bookkeeping.
+let dragRow = null;
+function clearDropHints() {
+  $scList.querySelectorAll(".drop-before, .drop-after")
+    .forEach(r => r.classList.remove("drop-before", "drop-after"));
+}
+$scList.addEventListener("dragover", (e) => {
+  if (!dragRow) return;
+  e.preventDefault();
+  e.dataTransfer.dropEffect = "move";
+  const rows = [...$scList.querySelectorAll(".sc-row:not(.dragging)")];
+  const after = rows.find(r => {
+    const box = r.getBoundingClientRect();
+    return e.clientY < box.top + box.height / 2;
+  });
+  clearDropHints();
+  if (after) {
+    after.classList.add("drop-before");
+    if (after.previousElementSibling !== dragRow) $scList.insertBefore(dragRow, after);
+  } else {
+    const last = rows[rows.length - 1];
+    if (last) last.classList.add("drop-after");
+    if ($scList.lastElementChild !== dragRow) $scList.appendChild(dragRow);
+  }
+});
+$scList.addEventListener("drop", (e) => { e.preventDefault(); clearDropHints(); });
+
+function addEditorRow(label = "", text = "") {
+  const row = document.createElement("div");
+  row.className = "sc-row";
+
+  const top = document.createElement("div");
+  top.className = "sc-row-top";
+  const grip = document.createElement("div");
+  grip.className = "sc-grip"; grip.title = "drag to reorder"; grip.textContent = "⠿";
+  grip.draggable = true;
+  // Only the grip starts a drag; the moved element is the whole row.
+  grip.addEventListener("dragstart", (e) => {
+    dragRow = row;
+    row.classList.add("dragging");
+    e.dataTransfer.effectAllowed = "move";
+    try { e.dataTransfer.setData("text/plain", ""); } catch (_) {}
+    try { e.dataTransfer.setDragImage(row, 0, 0); } catch (_) {}
+  });
+  grip.addEventListener("dragend", () => {
+    row.classList.remove("dragging");
+    clearDropHints();
+    dragRow = null;
+  });
+  const lab = document.createElement("input");
+  lab.className = "sc-label"; lab.type = "text";
+  lab.placeholder = "button title"; lab.value = label;
+  const del = document.createElement("button");
+  del.type = "button"; del.className = "sc-del"; del.title = "delete"; del.textContent = "🗑";
+  del.addEventListener("click", () => row.remove());
+  top.appendChild(grip); top.appendChild(lab); top.appendChild(del);
+
+  const txt = document.createElement("textarea");
+  txt.className = "sc-text"; txt.rows = 2;
+  txt.placeholder = "text to fill into the box…"; txt.value = text;
+
+  row.appendChild(top); row.appendChild(txt);
+  $scList.appendChild(row);
+  return lab;
+}
+
+function openEditor() {
+  $scList.innerHTML = "";
+  if (shortcuts.length === 0) addEditorRow();
+  else shortcuts.forEach(s => addEditorRow(s.label, s.text));
+  $scModal.hidden = false;
+}
+function closeEditor() { $scModal.hidden = true; }
+
+function saveEditor() {
+  const next = [];
+  $scList.querySelectorAll(".sc-row").forEach(r => {
+    const label = r.querySelector(".sc-label").value.trim();
+    const text  = r.querySelector(".sc-text").value;
+    if (!label && !text.trim()) return;           // drop fully-empty rows
+    next.push({ label: label || text.trim().slice(0, 20), text });
+  });
+  shortcuts = next;
+  persistShortcuts();
+  renderShortcuts();
+  closeEditor();
+}
+
+document.getElementById("scEdit").addEventListener("click", openEditor);
+document.getElementById("scClose").addEventListener("click", closeEditor);
+document.getElementById("scCancel").addEventListener("click", closeEditor);
+document.getElementById("scSave").addEventListener("click", saveEditor);
+document.getElementById("scAdd").addEventListener("click", () => {
+  const lab = addEditorRow();
+  lab.focus();
+  lab.scrollIntoView({ block: "nearest" });
+});
+document.getElementById("scReset").addEventListener("click", () => {
+  $scList.innerHTML = "";
+  DEFAULT_SHORTCUTS.forEach(s => addEditorRow(s.label, s.text));
+});
+$scModal.addEventListener("click", (e) => { if (e.target === $scModal) closeEditor(); });
+
+const PRIVATE_PREFIX = "[PRIVATE] ";
+// Appended to every outgoing backchannel message (NOT shown in the user's
+// bubble, NOT spoken — it's input to the agent). Persona docs alone proved
+// unreliable for getting clawd to default-private, so we reinforce the rule in
+// the immediate turn every time. Stripped from display in renderUserMessage.
+const PRIVATE_REPLY_HINT =
+  "\n\n[backchannel — this is a PRIVATE message. Reply privately by default; it " +
+  "is NOT spoken on the call. To speak something to the room, wrap EXACTLY those " +
+  "words in [SAY]…[/SAY] — only [SAY] content is spoken aloud.]";
+const PRIVATE_BLOCK_RE = /\[PRIVATE\]([\s\S]*?)\[\/PRIVATE\]/g;
+// NEW convention (matches the voice page's TTS gate): only [SAY]…[/SAY] is spoken
+// on the call; everything else is private. The classifier below is built on this.
+const SAY_BLOCK_RE = /\[SAY\]([\s\S]*?)\[\/SAY\]/g;
+// /opus /sonnet /glm /kimi /minimax → harness model-switch commands. These are
+// interpreted by the agent runtime (NOT the LLM); the model doesn't decide
+// anything. We send "/model <id>" with deliver:false and silence the resulting
+// run so it neither renders here nor speaks on the call. /glm (GLM 5.2) is the
+// default — see the agent model in ~/.openclaw/openclaw.json.
+const MODEL_COMMANDS = {
+  "/opus": "bankr/claude-opus-4.8",
+  "/sonnet": "bankr/claude-sonnet-4.6",
+  "/glm": "bankr/glm-5.2",
+  "/kimi": "bankr/kimi-k2.6",
+  "/minimax": "bankr/minimax-m3",
+};
+const HISTORY_LIMIT = 100;
+const RECONNECT_MS = 2000;
+
+const state = {
+  config: null,
+  ws: null,
+  connected: false,
+  reqSeq: 0,
+  pending: new Map(),         // rpc id → {resolve, reject}
+  turns: new Map(),           // runId → assistant turn DOM/state
+  activeRunId: null,
+  silentRuns: new Set(),      // runIds to swallow (e.g. /model switches)
+  loadingHistory: false,
+  bufferedEvents: [],         // events received during history load
+  historyUserKeys: new Set(), // dedupe pending vs history
+};
+
+// ── utils ─────────────────────────────────────────────────────────────────
+function esc(s) {
+  return String(s)
+    .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;").replace(/'/g, "&#39;");
+}
+// ── markdown → HTML ─────────────────────────────────────────────────────────
+// Compact, dependency-free. Everything is HTML-escaped first (via esc), so the
+// only HTML that reaches the DOM is the tags we generate. Inline code is stashed
+// before bold/italic run so a `*` inside code doesn't get treated as emphasis.
+// Underscores are intentionally NOT emphasis markers — too many identifiers and
+// paths use them (session_id, __pycache__).
+function mdInline(t) {
+  t = esc(t);
+  const codes = [];
+  t = t.replace(/`([^`]+)`/g, (_, c) => { codes.push(c); return " C" + (codes.length - 1) + " "; });
+  t = t.replace(/\[([^\]]+)\]\((https?:[^\s)]+)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>');
+  t = t.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
+  t = t.replace(/\*([^*\n]+)\*/g, "<em>$1</em>");
+  t = t.replace(/ C(\d+) /g, (_, i) => "<code>" + codes[+i] + "</code>");
+  return t;
+}
+function mdToHtml(src) {
+  // Fenced code blocks first — stash them so block/inline rules skip their guts.
+  const fences = [];
+  let s = String(src).replace(/```[ \t]*[\w-]*\n?([\s\S]*?)```/g, (_, code) => {
+    fences.push('<pre class="cb"><code>' + esc(code.replace(/\n+$/, "")) + "</code></pre>");
+    return " F" + (fences.length - 1) + " ";
+  });
+  const out = [];
+  let para = [], list = null;
+  const flushPara = () => { if (para.length) { out.push("<p>" + para.map(mdInline).join("<br>") + "</p>"); para = []; } };
+  const flushList = () => {
+    if (list) {
+      out.push("<" + list.type + ">" + list.items.map(i => "<li>" + mdInline(i) + "</li>").join("") + "</" + list.type + ">");
+      list = null;
+    }
+  };
+  for (const line of s.split("\n")) {
+    const fence = line.match(/^ F(\d+) $/);
+    if (fence) { flushPara(); flushList(); out.push(fences[+fence[1]]); continue; }
+    if (!line.trim()) { flushPara(); flushList(); continue; }
+    const h = line.match(/^(#{1,6})\s+(.*)$/);
+    if (h) { flushPara(); flushList(); out.push("<h" + h[1].length + ">" + mdInline(h[2]) + "</h" + h[1].length + ">"); continue; }
+    const ul = line.match(/^[-*]\s+(.*)$/), ol = line.match(/^\d+\.\s+(.*)$/);
+    if (ul) { flushPara(); if (!list || list.type !== "ul") { flushList(); list = { type: "ul", items: [] }; } list.items.push(ul[1]); continue; }
+    if (ol) { flushPara(); if (!list || list.type !== "ol") { flushList(); list = { type: "ol", items: [] }; } list.items.push(ol[1]); continue; }
+    flushList();
+    para.push(line);
+  }
+  flushPara(); flushList();
+  return out.join("");
+}
+function uuid() {
+  return ([1e7]+-1e3+-4e3+-8e3+-1e11).replace(/[018]/g, c =>
+    (c ^ crypto.getRandomValues(new Uint8Array(1))[0] & 15 >> c/4).toString(16)
+  );
+}
+function setStatus(kind, label) {
+  $statusDot.className = "dot " + kind;
+  $statusDot.title = label || kind;
+}
+function setError(msg) {
+  if (!msg) { $errBar.style.display = "none"; $errBar.textContent = ""; return; }
+  $errBar.style.display = "block";
+  $errBar.textContent = msg;
+}
+function scrollToBottom(behavior = "smooth") {
+  // "instant" for one-shot reveals (e.g. the "working" placeholder) that won't
+  // re-fire — a single smooth scroll from far up the log can stall when the
+  // viewport resizes (mobile keyboard dismiss) mid-animation; an instant jump
+  // always lands. Streaming output keeps the default smooth tracking.
+  $log.scrollTo({ top: $log.scrollHeight, behavior });
+}
+
+// Device auth (Ed25519 handshake) lives in the proxy (server.py) now, done
+// server-side so the browser needs no WebCrypto / secure context. The browser
+// just waits for the proxy's `proxy.ready` event — see ws.onopen / onFrame.
+
+// ── content extraction ────────────────────────────────────────────────────
+function extractText(content) {
+  if (!content) return "";
+  if (typeof content === "string") return content;
+  if (Array.isArray(content)) {
+    return content
+      .filter(b => b && (b.type === "text" || typeof b.text === "string"))
+      .map(b => b.text || "").join("");
+  }
+  if (typeof content === "object" && typeof content.text === "string") return content.text;
+  return "";
+}
+function extractToolUses(content) {
+  if (!Array.isArray(content)) return [];
+  return content
+    .filter(b => b && (b.type === "tool_use" || b.type === "toolCall"))
+    .map(b => ({
+      id: b.id,
+      name: b.name || "tool",
+      input: b.input || b.arguments || {},
+    }));
+}
+
+// openclaw wraps user messages with a "System: …\n\n<typed>" prefix. Strip it
+// for display, matching what clawd-web-chat does.
+function extractUserTypedText(raw) {
+  if (!raw) return "";
+  const idx = raw.indexOf("\n\n");
+  if (raw.startsWith("System:") && idx !== -1) return raw.slice(idx + 2);
+  return raw;
+}
+
+// Split an assistant text into segments tagged either "private" or "spoken".
+// NEW convention: [SAY]...[/SAY] regions are SPOKEN on the call; everything else
+// is private. (Inverse of the old [PRIVATE] scheme — matches the voice page's
+// [SAY]-only TTS gate.) Tags themselves are stripped — segments hold inner text.
+// Used for live + historical rendering.
+function splitAssistantSegments(text) {
+  if (!text) return [];
+  const segs = [];
+  let last = 0;
+  SAY_BLOCK_RE.lastIndex = 0;
+  let m;
+  while ((m = SAY_BLOCK_RE.exec(text)) !== null) {
+    if (m.index > last) {
+      const before = text.slice(last, m.index);
+      if (before.trim()) segs.push({ kind: "private", text: before });
+    }
+    if (m[1].trim()) segs.push({ kind: "spoken", text: m[1] });
+    last = SAY_BLOCK_RE.lastIndex;
+  }
+  // Trailing content. If an unclosed [SAY] tag exists (mid-stream), classify the
+  // rest as spoken so the in-flight stream shows in the right slot.
+  if (last < text.length) {
+    const tail = text.slice(last);
+    const openIdx = tail.indexOf("[SAY]");
+    if (openIdx !== -1) {
+      const before = tail.slice(0, openIdx);
+      if (before.trim()) segs.push({ kind: "private", text: before });
+      const inside = tail.slice(openIdx + "[SAY]".length);
+      if (inside.length > 0) segs.push({ kind: "spoken", text: inside, open: true });
+    } else if (tail.trim()) {
+      segs.push({ kind: "private", text: tail });
+    }
+  }
+  return segs;
+}
+
+// ── rendering ─────────────────────────────────────────────────────────────
+function clearEmpty() {
+  const e = $log.querySelector(".empty");
+  if (e) e.remove();
+}
+
+function renderUserMessage(rawText, opts = {}) {
+  clearEmpty();
+  const cleaned = (rawText || "").split(PRIVATE_REPLY_HINT)[0];  // hide the agent-only hint
+  const text = extractUserTypedText(cleaned) || cleaned || "";
+  const isPriv = text.trimStart().startsWith("[PRIVATE]");
+  const display = isPriv ? text.replace(/^\s*\[PRIVATE\]\s?/, "") : text;
+  const el = document.createElement("div");
+  el.className = "msg " + (isPriv ? "user-private" : "user-voice");
+  el.innerHTML =
+    `<span class="tag">${isPriv ? "you · private" : "you · spoken on call"}</span>` +
+    esc(display);
+  $log.appendChild(el);
+  if (opts.scroll !== false) scrollToBottom();
+  return el;
+}
+
+function renderAssistantSkeleton(runId, live = false) {
+  clearEmpty();
+  const wrap = document.createElement("div");
+  wrap.className = "msg assistant";
+  wrap.dataset.runId = runId;
+  // thinking + tools render the "process" above the final answer (segments).
+  wrap.innerHTML =
+    `<div class="thinking"></div><div class="tools"></div>` +
+    `<div class="segments"></div><div class="meta">…</div>`;
+  $log.appendChild(wrap);
+  const turn = {
+    runId,
+    wrap,
+    thinkingWrap: wrap.querySelector(".thinking"),
+    toolsWrap: wrap.querySelector(".tools"),
+    segmentsEl: wrap.querySelector(".segments"),
+    metaEl: wrap.querySelector(".meta"),
+    thinkingCard: null,
+    toolCards: new Map(),      // toolCallId → card element
+    rawText: "",
+    statusLabel: "working",
+    startedAt: 0,
+    tickerId: null,
+    final: false,
+  };
+  state.turns.set(runId, turn);
+  if (live) { startTurnTicker(turn); scrollToBottom("instant"); }  // reveal the "working" placeholder the moment it mounts
+  return turn;
+}
+
+// Return the turn for runId, creating a live skeleton if one doesn't exist
+// yet. Lets agent events (thinking/tool) that arrive BEFORE the first text
+// delta still attach to — and create — the turn card.
+function ensureTurn(runId, live = true) {
+  let turn = runId ? state.turns.get(runId) : null;
+  if (!turn) turn = renderAssistantSkeleton(runId, live);
+  return turn;
+}
+
+// Live "working · Ns" indicator in the meta line. The label updates to reflect
+// the current activity (thinking, or the running tool name) via setTurnStatus.
+function startTurnTicker(turn) {
+  turn.startedAt = Date.now();
+  const render = () => {
+    if (turn.final) return;
+    const secs = Math.floor((Date.now() - turn.startedAt) / 1000);
+    turn.metaEl.innerHTML = `<span class="spin"></span>${esc(turn.statusLabel)} · ${secs}s`;
+  };
+  render();
+  turn.tickerId = setInterval(render, 1000);
+}
+
+function setTurnStatus(turn, label) {
+  if (!turn || turn.final || !turn.startedAt) return;
+  turn.statusLabel = label;
+  const secs = Math.floor((Date.now() - turn.startedAt) / 1000);
+  turn.metaEl.innerHTML = `<span class="spin"></span>${esc(label)} · ${secs}s`;
+}
+
+// ── thinking card ─────────────────────────────────────────────────────────
+// One collapsible card per turn; the header shows a live preview (last line)
+// so you can watch it reason without expanding.
+function updateThinkingCard(turn, text) {
+  if (!turn.thinkingCard) {
+    const card = document.createElement("div");
+    card.className = "think-card";
+    card.innerHTML =
+      `<div class="hdr"><span class="label">thinking</span>` +
+      `<span class="preview"></span><span class="chev">›</span></div><div class="body"></div>`;
+    card.querySelector(".hdr").onclick = () => card.classList.toggle("open");
+    turn.thinkingWrap.appendChild(card);
+    turn.thinkingCard = card;
+  }
+  const card = turn.thinkingCard;
+  card.querySelector(".body").textContent = text;
+  card.querySelector(".preview").textContent = lastNonEmptyLine(text);
+}
+
+function lastNonEmptyLine(text) {
+  const lines = String(text).split("\n");
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const s = lines[i].trim();
+    if (s) return s;
+  }
+  return "";
+}
+
+// ── tool cards ────────────────────────────────────────────────────────────
+function toolArgPreview(input) {
+  if (!input || typeof input !== "object") return "";
+  const a = input.command || input.path || input.file_path || input.url ||
+            input.pattern || input.query || input.prompt || "";
+  return a ? String(a) : "";
+}
+
+function addToolCard(turn, callId, name, input) {
+  if (turn.toolCards.has(callId)) return turn.toolCards.get(callId);
+  const card = document.createElement("div");
+  card.className = "tool-card";
+  card.innerHTML =
+    `<div class="hdr"><span class="name"></span><span class="preview"></span>` +
+    `<span class="stat"></span><span class="chev">›</span></div><div class="body"></div>`;
+  card.querySelector(".name").textContent = "▸ " + name;
+  const argp = toolArgPreview(input);
+  card.querySelector(".preview").textContent = argp ? " " + argp.slice(0, 80) : "";
+  card.querySelector(".hdr").onclick = () => card.classList.toggle("open");
+  let inStr = "";
+  try { inStr = input ? JSON.stringify(input, null, 2) : ""; } catch {}
+  if (inStr) card.querySelector(".body").textContent = inStr;
+  turn.toolsWrap.appendChild(card);
+  turn.toolCards.set(callId, card);
+  return card;
+}
+
+function setToolResult(turn, callId, out, isError) {
+  const card = turn.toolCards.get(callId);
+  if (!card) return;
+  const stat = card.querySelector(".stat");
+  stat.textContent = isError ? "✗" : "✓";
+  stat.className = "stat " + (isError ? "bad" : "ok");
+  let outStr;
+  if (typeof out === "string") outStr = out;
+  else { try { outStr = JSON.stringify(out, null, 2); } catch { outStr = String(out); } }
+  const body = card.querySelector(".body");
+  const inStr = body.textContent;
+  body.textContent = (inStr ? inStr + "\n\n— result —\n" : "") + outStr;
+}
+
+function updateAssistantText(turn, fullText) {
+  turn.rawText = fullText;
+  const segs = splitAssistantSegments(fullText);
+  // Re-render segments. Cheap — assistant text is small enough to keep this
+  // dumb-and-correct rather than diff-based.
+  turn.segmentsEl.innerHTML = "";
+  for (const s of segs) {
+    const seg = document.createElement("div");
+    seg.className = "seg " + s.kind;
+    const tag = s.kind === "private" ? "private to you" : "spoken on call";
+    seg.innerHTML = `<span class="seg-tag">${tag}</span><div class="md">` + mdToHtml(s.text.trim()) + `</div>`;
+    turn.segmentsEl.appendChild(seg);
+  }
+  if (segs.length === 0) turn.segmentsEl.innerHTML = `<div class="seg spoken"><span class="seg-tag">…</span></div>`;
+}
+
+function markAssistantFinal(turn, label) {
+  turn.final = true;
+  if (turn.tickerId) { clearInterval(turn.tickerId); turn.tickerId = null; }
+  turn.metaEl.textContent = label || "done";
+}
+
+function renderSystem(text) {
+  clearEmpty();
+  const el = document.createElement("div");
+  el.className = "msg system";
+  el.textContent = text;
+  $log.appendChild(el);
+  scrollToBottom();
+}
+
+function renderToolSummary(uses) {
+  if (!uses || !uses.length) return;
+  clearEmpty();
+  const el = document.createElement("div");
+  el.className = "msg tool";
+  const lines = uses.map(u => {
+    const arg = u.input?.command || u.input?.path || u.input?.url || "";
+    return "▸ " + u.name + (arg ? ": " + String(arg).slice(0, 80) : "");
+  });
+  el.innerHTML = `<span class="tag">tools</span>` + esc(lines.join("\n"));
+  $log.appendChild(el);
+}
+
+// ── WebSocket / RPC ───────────────────────────────────────────────────────
+let _connectTimer = null;
+function connect() {
+  if (!state.config?.wsUrl) { setStatus("bad", "no gateway url"); return; }
+  setStatus("connecting", "connecting…");
+  let ws;
+  try { ws = new WebSocket(state.config.wsUrl); }
+  catch (e) { setStatus("bad", "bad url"); setError("Open WS failed: " + e.message); return; }
+  state.ws = ws;
+
+  ws.onopen = () => {
+    // The local proxy (server.py) authenticates to the gateway server-side
+    // with its own Ed25519 device identity, so the browser needs no WebCrypto
+    // and no secure context — plain HTTP over the LAN works. We just wait for
+    // the proxy's synthetic `proxy.ready` event (handled in onFrame), then
+    // start sending app RPCs. `proxy.error` surfaces an auth failure.
+    setStatus("connecting", "authenticating…");
+  };
+
+  ws.onmessage = (ev) => {
+    let frame; try { frame = JSON.parse(ev.data); } catch { return; }
+    onFrame(frame);
+  };
+
+  ws.onclose = (ev) => {
+    setStatus("bad", `disconnected (${ev.code})`);
+    state.connected = false;
+    state.activeRunId = null;
+    updateSendButton();
+    if (ev.code === 1008) {
+      setError(
+        "Gateway rejected (1008). Check that:\n" +
+        "  • This origin is in gateway.controlUi.allowedOrigins\n" +
+        "  • The device is paired (openclaw devices list / approve <id>)\n" +
+        "  • The auth token is correct"
+      );
+      return;
+    }
+    if (ev.code !== 1000) {
+      clearTimeout(_connectTimer);
+      _connectTimer = setTimeout(() => { if (!state.connected) connect(); }, RECONNECT_MS);
+    }
+  };
+
+  ws.onerror = () => {};
+}
+
+function rpc(method, params) {
+  return new Promise((resolve, reject) => {
+    if (!state.ws || state.ws.readyState !== WebSocket.OPEN) return reject(new Error("not connected"));
+    const id = "r" + (++state.reqSeq);
+    state.pending.set(id, { resolve, reject });
+    state.ws.send(JSON.stringify({ type: "req", id, method, params }));
+    setTimeout(() => {
+      if (state.pending.has(id)) { state.pending.delete(id); reject(new Error(method + " timed out")); }
+    }, 60000);
+  });
+}
+
+function onFrame(frame) {
+  if (frame.type === "res") {
+    const p = state.pending.get(frame.id);
+    if (p) {
+      state.pending.delete(frame.id);
+      if (frame.ok) p.resolve(frame.payload);
+      else p.reject(new Error(frame.error?.message || "rpc error"));
+    }
+    return;
+  }
+  if (frame.type !== "event") return;
+  switch (frame.event) {
+    case "chat":  return handleChatEvent(frame.payload);
+    case "agent": return handleAgentEvent(frame.payload);
+    case "proxy.ready":
+      return onConnected();
+    case "proxy.error":
+      setStatus("bad", "auth failed");
+      setError("Proxy gateway auth failed: " + (frame.payload?.message || "unknown"));
+      return;
+    case "tick": case "presence": case "health": return;
+    default: return;
+  }
+}
+
+async function onConnected() {
+  state.connected = true;
+  setStatus("ok", state.config.sessionKey);
+  setError("");
+  try {
+    await rpc("sessions.patch", {
+      key: state.config.sessionKey,
+      verboseLevel: "on",
+      reasoningLevel: "stream",   // emit thinking deltas so we can show "what it's thinking"
+    });
+  } catch (e) {
+    console.warn("sessions.patch:", e.message);
+  }
+  await loadHistory();
+  updateSendButton();
+}
+
+// ── history ───────────────────────────────────────────────────────────────
+async function loadHistory() {
+  state.loadingHistory = true;
+  state.bufferedEvents = [];
+  $log.innerHTML = "";
+  state.turns.clear();
+  state.activeRunId = null;
+  try {
+    const res = await rpc("chat.history", {
+      sessionKey: state.config.sessionKey,
+      limit: HISTORY_LIMIT,
+    });
+    const msgs = res.messages || res.items || [];
+    if (msgs.length === 0) {
+      $log.innerHTML = `<div class="empty">no history yet.<br/>messages you send here go in <code>[PRIVATE]</code>.<br/>clawd is taught to reply privately by default.</div>`;
+    } else {
+      for (const m of msgs) {
+        const role = m.role || "system";
+        const content = m.content;
+        if (role === "user") {
+          if (Array.isArray(content) && content.length && content.every(b => b?.type === "tool_result")) continue;
+          renderUserMessage(extractText(content), { scroll: false });
+        } else if (role === "assistant") {
+          const text = extractText(content);
+          if (!text) continue;
+          const turn = renderAssistantSkeleton(m.id || ("hist-" + Math.random()));
+          updateAssistantText(turn, text);
+          markAssistantFinal(turn, "");
+          turn.metaEl.style.display = "none";
+          const uses = extractToolUses(content);
+          if (uses.length) renderToolSummary(uses);
+        } else if (role === "tool" || role === "toolResult") {
+          continue;
+        } else {
+          const text = extractText(content);
+          if (text) renderSystem(text);
+        }
+      }
+    }
+  } catch (e) {
+    setError("history load failed: " + e.message);
+  } finally {
+    state.loadingHistory = false;
+    // Replay any events that arrived during load.
+    const buf = state.bufferedEvents; state.bufferedEvents = [];
+    for (const ev of buf) {
+      if (ev.kind === "chat") handleChatEvent(ev.payload);
+      else if (ev.kind === "agent") handleAgentEvent(ev.payload);
+    }
+    scrollToBottom();
+  }
+}
+
+// ── chat events ───────────────────────────────────────────────────────────
+function handleChatEvent(payload) {
+  if (state.loadingHistory) {
+    state.bufferedEvents.push({ kind: "chat", payload });
+    return;
+  }
+  const { runId, sessionKey, state: chatState, message, errorMessage } = payload;
+  if (sessionKey && sessionKey !== state.config.sessionKey) return;
+
+  // Silent runs (e.g. /model switches): swallow entirely — never render, never
+  // adopt as activeRunId. Clean up when the run terminates.
+  if (runId && state.silentRuns.has(runId)) {
+    if (chatState === "final" || chatState === "aborted" || chatState === "error") {
+      state.silentRuns.delete(runId);
+      if (state.activeRunId === runId) state.activeRunId = null;
+    }
+    return;
+  }
+
+  let turn = runId ? state.turns.get(runId) : null;
+  if (!turn && (chatState === "delta" || chatState === "final")) {
+    turn = renderAssistantSkeleton(runId, true);
+    // Adopt runs we didn't start (e.g. voice-initiated turns) so /stop can
+    // abort them too — otherwise activeRunId is only set from our own send.
+    if (chatState === "delta" && state.activeRunId == null) { state.activeRunId = runId; updateSendButton(); }
+  }
+
+  if (turn && (chatState === "delta" || chatState === "final")) {
+    if (message) {
+      const text = extractText(message.content);
+      if (text) updateAssistantText(turn, text);
+      const uses = extractToolUses(message.content);
+      if (uses.length && chatState === "final") renderToolSummary(uses);
+    }
+  }
+
+  if (chatState === "final" && turn) {
+    markAssistantFinal(turn, "done");
+    turn.metaEl.style.display = "none";
+    if (state.activeRunId === runId) state.activeRunId = null;
+    updateSendButton();
+  } else if (chatState === "aborted" && turn) {
+    markAssistantFinal(turn, "⏹ aborted");
+    if (state.activeRunId === runId) state.activeRunId = null;
+    updateSendButton();
+  } else if (chatState === "error" && turn) {
+    markAssistantFinal(turn, "⚠ " + (errorMessage || "error"));
+    if (state.activeRunId === runId) state.activeRunId = null;
+    updateSendButton();
+  }
+
+  scrollToBottom();
+}
+
+function handleAgentEvent(payload) {
+  if (state.loadingHistory) {
+    state.bufferedEvents.push({ kind: "agent", payload });
+    return;
+  }
+  const { runId, sessionKey, stream, data } = payload;
+  if (sessionKey && sessionKey !== state.config.sessionKey) return;
+  if (!runId || state.silentRuns.has(runId)) return;
+
+  const turn = ensureTurn(runId);
+  // Thinking/tool deltas often arrive before the first text token. Adopt the
+  // run so /stop works and the working indicator shows immediately.
+  if (state.activeRunId == null && !turn.final) { state.activeRunId = runId; updateSendButton(); }
+
+  if (stream === "thinking" || stream === "reasoning") {
+    const text = data?.text || data?.content;
+    if (text) {
+      setTurnStatus(turn, "thinking");
+      updateThinkingCard(turn, text);
+    }
+  } else if (stream === "tool") {
+    const callId = data?.toolCallId || data?.id || ("call-" + (data?.name || "tool"));
+    const phase = data?.phase || data?.event;   // gateway sends `phase`: start / result / end
+    if (phase === "start") {
+      const name = data?.name || data?.toolName || "tool";
+      setTurnStatus(turn, name);
+      addToolCard(turn, callId, name, data?.args || data?.input);
+    } else if (phase === "result" || phase === "end") {
+      const out = data?.output ?? data?.result ?? data?.text ?? data?.content ?? "(done)";
+      const isError = !!data?.isError || !!data?.error;
+      setToolResult(turn, callId, out, isError);
+    }
+  }
+  scrollToBottom();
+}
+
+// Small local-only status line (model switches, etc.) — reuses the tool style.
+function renderNote(text) {
+  const el = document.createElement("div");
+  el.className = "msg tool";
+  el.innerHTML = `<span class="tag">sys</span>` + esc(text);
+  $log.appendChild(el);
+  scrollToBottom();
+}
+
+// ── sending ───────────────────────────────────────────────────────────────
+function updateSendButton() {
+  if (state.activeRunId) {
+    $send.textContent = "stop";
+    $send.classList.add("stop");
+    $send.disabled = false;
+  } else {
+    $send.textContent = "send";
+    $send.classList.remove("stop");
+    $send.disabled = !state.connected;
+  }
+}
+
+async function onSend() {
+  const raw = $input.value.trim();
+
+  // Deterministic control commands — intercepted here, never sent to the LLM.
+  // Checked BEFORE the active-run guard below so they work mid-response (e.g.
+  // /new while clawd is still talking), instead of just aborting the turn.
+  if (raw === "/stop") { $input.value = ""; autosize(); return onStop(); }
+  if (raw === "/new") {
+    $input.value = ""; autosize();
+    try {
+      await rpc("sessions.reset", { key: state.config.sessionKey, reason: "reset" });
+      state.turns.clear();
+      state.silentRuns.clear();
+      state.activeRunId = null;
+      $log.innerHTML = "";
+      updateSendButton();
+    } catch (e) {
+      setError("sessions.reset failed: " + e.message);
+    }
+    return;
+  }
+  if (raw === "/compact") {
+    // Real compaction. Send the BARE "/compact" (no [PRIVATE] wrap, no hint) so
+    // claude -p executes it as a command instead of reading it as chat text —
+    // wrapping it makes the brain merely narrate compacting while context keeps
+    // climbing. Silent run; the context chip dropping is the confirmation.
+    $input.value = ""; autosize();
+    try {
+      if (state.activeRunId) {
+        await rpc("chat.abort", { sessionKey: state.config.sessionKey, runId: state.activeRunId });
+        state.activeRunId = null;
+        updateSendButton();
+      }
+      const res = await rpc("chat.send", {
+        sessionKey: state.config.sessionKey,
+        message: "/compact",
+        deliver: false,
+        idempotencyKey: uuid(),
+      });
+      if (res?.runId) state.silentRuns.add(res.runId);  // swallow the result
+      renderNote("compacting context…");
+    } catch (e) {
+      setError("compact failed: " + e.message);
+    }
+    return;
+  }
+  if (MODEL_COMMANDS[raw]) {
+    const model = MODEL_COMMANDS[raw];
+    $input.value = ""; autosize();
+    try {
+      // Can't start a model-switch run while another is in flight — abort first.
+      if (state.activeRunId) {
+        await rpc("chat.abort", { sessionKey: state.config.sessionKey, runId: state.activeRunId });
+        state.activeRunId = null;
+        updateSendButton();
+      }
+      const res = await rpc("chat.send", {
+        sessionKey: state.config.sessionKey,
+        message: `/model ${model}`,
+        deliver: false,
+        idempotencyKey: uuid(),
+      });
+      if (res?.runId) state.silentRuns.add(res.runId);  // swallow this run
+      renderNote(`model → ${raw.slice(1)} (${model})`);
+    } catch (e) {
+      setError("model switch failed: " + e.message);
+    }
+    return;
+  }
+
+  // Non-command input: an active run means the send button is acting as "stop".
+  if (state.activeRunId) return onStop();
+  if (!raw) return;
+  if (!state.connected) { setError("not connected"); return; }
+
+  const text = raw.startsWith("[PRIVATE]") ? raw : (PRIVATE_PREFIX + raw);
+  renderUserMessage(text);          // clean bubble (no hint)
+  $input.value = "";
+  autosize();
+  try {
+    const res = await rpc("chat.send", {
+      sessionKey: state.config.sessionKey,
+      message: text + PRIVATE_REPLY_HINT,   // reinforce default-private to the agent
+      deliver: false,
+      idempotencyKey: uuid(),
+    });
+    if (res?.runId) {
+      state.activeRunId = res.runId;
+      // Show the working indicator right away — don't wait for the first token.
+      // Thinking/tool events will attach to this same turn as they arrive.
+      if (!state.turns.has(res.runId)) renderAssistantSkeleton(res.runId, true);
+      updateSendButton();
+    }
+  } catch (e) {
+    setError("chat.send failed: " + e.message);
+  }
+}
+
+async function onStop() {
+  // PANIC STOP — must cut the voice RIGHT NOW. Two prongs:
+  // 1) Hit the video-chat's cross-page trigger FIRST. This kills the audio even
+  //    when no run is active (model done generating, TTS still draining) — the
+  //    common case, which chat.abort alone can NOT stop. Same host as this page
+  //    (both served from the same machine), video-chat port is 7900.
+  try {
+    fetch(`${location.protocol}//${location.hostname}:7900/trigger-stop`,
+          { method: "POST", mode: "no-cors", keepalive: true });
+  } catch (e) { /* video-chat may be down; ignore */ }
+  // 2) Abort the model run too, if one is in flight (stops further generation).
+  if (state.activeRunId) {
+    try {
+      await rpc("chat.abort", {
+        sessionKey: state.config.sessionKey,
+        runId: state.activeRunId,
+      });
+    } catch (e) {
+      console.warn("abort:", e.message);
+    }
+  }
+}
+
+// ── Push-to-talk ───────────────────────────────────────────────────────────
+// Hold the button → clawd starts listening on the call; release → he submits
+// what he heard. Same cross-page channel as /stop: POST to the video-chat
+// server (:7900), which relays an SSE ptt-down / ptt-up to the voice page.
+// This replaces the "okay clawd" wake word + trailing-silence delay with a
+// perfectly-timed press/release. Pointer events cover mouse + touch in one path.
+const $ptt = document.getElementById("ptt");
+let _pttHeld = false;
+
+function pttTrigger(updown) {
+  try {
+    fetch(`${location.protocol}//${location.hostname}:7900/trigger-ptt-${updown}`,
+          { method: "POST", mode: "no-cors", keepalive: true });
+  } catch (e) { /* video-chat may be down; ignore */ }
+}
+function pttPress(e) {
+  if (_pttHeld) return;
+  e.preventDefault();
+  _pttHeld = true;
+  $ptt.classList.add("held");
+  pttTrigger("down");
+}
+function pttRelease(e) {
+  if (!_pttHeld) return;
+  if (e) e.preventDefault();
+  _pttHeld = false;
+  $ptt.classList.remove("held");
+  pttTrigger("up");
+}
+$ptt.addEventListener("pointerdown", pttPress);
+$ptt.addEventListener("pointerup", pttRelease);
+$ptt.addEventListener("pointercancel", pttRelease);
+$ptt.addEventListener("pointerleave", pttRelease);   // finger/mouse slides off while held → treat as release
+// Belt-and-suspenders: if the tab loses focus mid-hold, release so we don't
+// leave the voice page stuck capturing forever.
+window.addEventListener("blur", () => pttRelease());
+
+// Numpad "." = hold-to-talk when the page is focused. We deliberately do NOT
+// use Space here: Space also mutes in slop.computer, so it kept catching us.
+// NumpadDecimal isn't a normal typing key, so this fires even while focused in
+// the text area (preventDefault stops it inserting a "."). keydown repeats
+// while held, so e.repeat guards the re-fire.
+window.addEventListener("keydown", (e) => {
+  if (e.code !== "NumpadDecimal" || e.repeat) return;
+  e.preventDefault();
+  pttPress(e);
+});
+window.addEventListener("keyup", (e) => {
+  if (e.code !== "NumpadDecimal") return;
+  if (!_pttHeld) return;
+  e.preventDefault();
+  pttRelease(e);
+});
+
+function autosize() {
+  $input.style.height = "auto";
+  $input.style.height = Math.min(200, Math.max(44, $input.scrollHeight)) + "px";
+}
+
+$input.addEventListener("input", autosize);
+$input.addEventListener("keydown", (e) => {
+  if (e.key === "Enter" && !e.shiftKey && !e.isComposing) {
+    e.preventDefault();
+    onSend();
+  }
+});
+$send.addEventListener("click", onSend);
+$btnReload.addEventListener("click", () => { if (state.connected) loadHistory(); });
+
+// ── boot ──────────────────────────────────────────────────────────────────
+(async function boot() {
+  try {
+    // Forward the ?k=<token> from our own URL so the gated /config (and the
+    // wsUrl it returns, which embeds the token for the proxy) are reachable.
+    const r = await fetch("/config" + window.location.search);
+    state.config = await r.json();
+  } catch (e) {
+    setError("could not load /config: " + e.message);
+    return;
+  }
+  $sessionLabel.textContent = state.config.sessionKey || "(no session)";
+  // In proxy mode the gateway token is intentionally withheld from the client.
+  if (!state.config.proxy && !state.config.token) setError("gateway token missing — check ~/.openclaw/openclaw.json");
+  // Pull the server-side shortcut list (survives IP changes) and repaint.
+  if (await syncShortcutsFromServer()) renderShortcuts();
+  connect();
+})();
+</script>
+</body>
+</html>

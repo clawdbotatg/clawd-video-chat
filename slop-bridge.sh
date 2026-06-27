@@ -143,8 +143,9 @@ if ! lsof -nP -iTCP:7861 -sTCP:LISTEN >/dev/null 2>&1; then
     Or: CLAUDE_P_AGENT_HOME=~/clawd/clawd-harness/projects/claude-p-agent CC_BRIDGE_CWD=~/clawd/clawd-harness/projects/claude-p-agent python3 cc-bridge.py"
 fi
 if ! lsof -nP -iTCP:7851 -sTCP:LISTEN >/dev/null 2>&1; then
-    warn "clawd-backchannel proxy (:7851) is NOT up — private LAN backchannel won't work.
-    Start it:  (cd ~/clawd/clawd-backchannel && nohup python3 server.py >/tmp/clawd-backchannel.log 2>&1 &)"
+    warn "backchannel proxy (:7851) is NOT up — private LAN backchannel won't work.
+    Start it:  (cd \"\$CLAWD_DIR/backchannel\" && nohup python3 server.py >/tmp/clawd-backchannel.log 2>&1 &)
+    Or (launchd):  launchctl kickstart -k gui/\$(id -u)/com.clawd.backchannel"
 fi
 
 # ── 5. Quit OBS so JSON edits stick on next launch ───────────────────────────
@@ -306,9 +307,9 @@ fi
 #  to clawd from another machine — in stable Chrome.)
 #
 # The URL is built at runtime, not hardcoded: the Mac's LAN IP is DHCP and drifts
-# (was .56 → .75 → .56), and the token lives in clawd-backchannel/.env. So we
+# (was .56 → .75 → .56), and the token lives in backchannel/.env. So we
 # read both fresh each run: http://<lan-ip>:7850/?k=<BACKCHANNEL_TOKEN>.
-BACKCHANNEL_ENV="$HOME/clawd/clawd-backchannel/.env"
+BACKCHANNEL_ENV="$CLAWD_DIR/backchannel/.env"
 BACKCHANNEL_PORT="7850"
 LAN_IP="$(ipconfig getifaddr en0 2>/dev/null || true)"
 BC_TOKEN=""
