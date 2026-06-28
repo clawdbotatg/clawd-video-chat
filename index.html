@@ -3520,8 +3520,15 @@ function pickBrainSound() {
 const _GREETING_RE = /^(gm|gn|gn8|good\s+(morning|night|evening|afternoon|day)|hi|hello|hey|howdy|sup|yo|hiya|greetings|hola|aloha|ok|k|kk|okay|thanks|thx|ty|cool|nice|great|got\s*it|cheers|bye|cya|night|morning)\b[!.?\s]*$/i;
 function shouldSkipAck(text) {
   const t = (text || "").trim();
-  if (t.length < 10) return true;       // too short to bother
+  if (!t) return true;
   if (_GREETING_RE.test(t)) return true; // bare greeting
+  // Quick/short questions ("can you hear me?", "are you there?", "what time
+  // is it?") — the real claude -p brain answers these almost instantly, so an
+  // ack would just race (and risk DOUBLING) the real reply. Stay silent and
+  // let the single real answer land. Only longer/substantive turns, where the
+  // brain takes a beat, are worth a placeholder stall.
+  const words = t.split(/\s+/).filter(Boolean).length;
+  if (words <= 6) return true;
   return false;
 }
 

@@ -583,48 +583,48 @@ class Handler(BaseHTTPRequestHandler):
             thinking_text = (body.get("thinkingText") or "").strip()[:600]
 
             if kind == "ack":
+                # CRITICAL: the ack must NEVER answer the user's question — its
+                # only job is to fill the ~1s of dead air before the real claude
+                # -p brain replies. We deliberately do NOT pass the user's
+                # message (or history) into this prompt: if Haiku can see the
+                # question it slips into answering it ("Yes, I can hear you"),
+                # which then double-speaks once the real brain answers the same
+                # thing. With the question hidden, the worst it can do is stall.
                 system = (
                     "You are a voice filling dead air out loud while a "
-                    "smarter model composes the real answer. Your ONLY job "
-                    "is to make a natural human stall noise so the silence "
-                    "isn't awkward. You are NOT answering anything.\n"
+                    "smarter model composes the real answer. Emit ONE short, "
+                    "non-committal placeholder so the silence isn't awkward. "
+                    "You are NOT answering anything, and you do NOT know the "
+                    "question — you have not even been shown it.\n"
                     "\n"
                     "Pull from a WIDE variety and keep it fresh every time. "
                     "Range from a single sound to a short phrase — lean "
                     "short. Mix these registers:\n"
                     "  - bare sounds: 'Hmm.' 'Mmm.' 'Uhh...' 'Hmmm.' "
-                    "'Okay.' 'Ummm.' 'Huh.' 'Right.' 'Ah.' 'Welp.'\n"
-                    "  - tiny phrases: 'Let me think.' 'Gimme a sec.' "
-                    "'Lemme check.' 'One moment.' 'Hold on.' 'Let me look.' "
-                    "'Hang on a sec.' 'Lemme dig in.' 'Working on it.' "
-                    "'Okay, thinking.' 'Hmm, lemme see.' 'Alright, gimme a "
-                    "moment.' 'Let me pull that up.' 'Checking now.'\n"
-                    "  - when the request clearly feels big, heavy, or "
-                    "tricky, you MAY acknowledge its WEIGHT (never its "
-                    "content): 'Oh, that's a heavy one — let me think on "
-                    "that.' 'Big question. Gimme a sec.' 'Ooh, tricky one.' "
-                    "'That's a good one, lemme sit with it.' 'Hmm, deep "
-                    "one.'\n"
+                    "'Okay.' 'Ummm.' 'Right.' 'Ah.' 'Let's see.'\n"
+                    "  - tiny phrases: 'Let me think about that.' 'Let me "
+                    "look at that.' 'Gimme a sec.' 'Lemme check.' 'One "
+                    "moment.' 'Hold on.' 'Let me dig into that.' 'Working "
+                    "on it.' 'Okay, thinking.' 'Hmm, lemme see.' 'Let me "
+                    "pull that up.'\n"
                     "\n"
                     "Hard rules:\n"
-                    "  - NEVER answer, hint at, or begin to address the "
-                    "request. No facts, no opinions, no claims.\n"
-                    "  - NEVER reference the actual topic or repeat words "
-                    "from their message. Commenting that it's 'big' or "
-                    "'tricky' is fine; naming the subject is not.\n"
+                    "  - NEVER answer, hint at, confirm, deny, or begin to "
+                    "address anything. No facts, no opinions, no yes/no, no "
+                    "claims of any kind.\n"
+                    "  - NEVER name or guess a topic — you cannot see the "
+                    "question, so do not pretend to.\n"
                     "  - NEVER echo greetings, thanks, or pleasantries.\n"
                     "  - NEVER promise what the answer will be.\n"
                     "\n"
                     "First-person, casual, spoken-aloud. No quotes, no "
-                    "emojis. Output ONLY the filler itself."
+                    "emojis. Output ONLY the placeholder itself."
                 )
                 user_msg = (
-                    f"User's message (for gauging weight ONLY — DO NOT "
-                    f"respond to it, DO NOT echo it):\n{last_user}\n\n"
-                    "Give ONE fresh stall noise. Vary it — could be a single "
-                    "sound, could be a few words. If the request feels big "
-                    "or tricky, you may nod to that weight, but never touch "
-                    "the topic itself."
+                    "Give ONE fresh, non-committal stall placeholder now — a "
+                    "single sound or a few words like 'let me think about "
+                    "that.' Do NOT answer anything; you have not seen the "
+                    "question."
                 )
             elif kind == "tool":
                 system = (
@@ -670,7 +670,10 @@ class Handler(BaseHTTPRequestHandler):
                 )
 
             msgs = [{"role": "system", "content": system}]
-            if history:
+            # The "ack" never gets conversation context — see the comment in its
+            # branch above. Showing it the recent turns is another way it leaks
+            # into answering. Only tool/thinking narration gets history.
+            if history and kind != "ack":
                 ctx = "\n".join(
                     f"{m.get('role')}: {(m.get('content') or '')[:300]}"
                     for m in history[-4:] if m.get("role") and m.get("content")
