@@ -54,7 +54,7 @@ AGENT_HOME = os.path.abspath(
 )
 if AGENT_HOME not in sys.path:
     sys.path.insert(0, AGENT_HOME)
-from agent import forget, read_prompt, run_turn  # noqa: E402
+from agent import current_session, forget, read_prompt, run_turn  # noqa: E402
 
 PORT = int(os.environ.get("CC_BRIDGE_PORT", "7861"))
 HOST = os.environ.get("CC_BRIDGE_HOST", "127.0.0.1")
@@ -117,8 +117,10 @@ def sess(key):
 # remembers it. We pass `remember=session_key` to run_turn — the engine loads that
 # key's stored claude session id, --resume's it, captures the new id, and saves it
 # back. We keep NO session bookkeeping of our own. `forget(key)` resets a
-# conversation. (Our sessionKeys — e.g. "agent:clawd:main" — are plain names, so the
-# engine stores them in its own .memory/ dir.) See claude-p-agent README "Memory".
+# conversation; `current_session(key)` reads a key's live id without a turn (we use
+# it to publish the just-abandoned id on reset, and we mirror the per-turn id into
+# the :7900 gauge sentinel). (Our sessionKeys — e.g. "agent:clawd:main" — are plain
+# names, so the engine stores them in its own .memory/ dir.) See README "Memory".
 
 
 def _write_brain_session(session_key, sid):
@@ -266,11 +268,14 @@ async def handle_req(ws, frame):
     elif method == "sessions.reset":
         key = params.get("key", "")
         s = sess(key)
-        forget(key)                 # engine drops this conversation → fresh claude -p next turn
+        prev_sid = current_session(key)   # read the abandoned id from the engine (no bookkeeping)
+        forget(key)                       # engine drops this conversation → fresh claude -p next turn
         s["history"] = []
         await ok({})
-        # Tell every client the context was cleared so the :7900 gauge can drain.
-        await broadcast_event("context.cleared", {"sessionKey": key})
+        # Tell every client the context was cleared, naming the now-abandoned session
+        # so the :7900 gauge can drain and ignore that stale session on its poll.
+        await broadcast_event("context.cleared",
+                              {"sessionKey": key, "prevSessionId": prev_sid})
     elif method == "chat.abort":
         holder = runs.get(params.get("runId"))
         proc = holder.get("proc") if isinstance(holder, dict) else None
@@ -295,11 +300,13 @@ async def handle_req(ws, frame):
         cmd_word = cmd.split(maxsplit=1)[0].lower() if cmd.split() else ""
         if cmd.lower() in ("/new", "/clear"):
             s = sess(session_key)
+            prev_sid = current_session(session_key)   # abandoned id, read from the engine
             forget(session_key)        # engine drops this conversation → next turn starts fresh
             s["history"] = []
             convo_log("CMD", "—", session_key, f"{cmd.lower()} → session reset (fresh)")
             await broadcast_chat(run_id, session_key, "final", "")
-            await broadcast_event("context.cleared", {"sessionKey": session_key})
+            await broadcast_event("context.cleared",
+                                  {"sessionKey": session_key, "prevSessionId": prev_sid})
         elif cmd_word == "/compact":
             # REAL compaction. claude -p only runs a slash command when it's the
             # WHOLE prompt — so a backchannel "/compact" wrapped as
