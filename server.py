@@ -583,48 +583,70 @@ class Handler(BaseHTTPRequestHandler):
             thinking_text = (body.get("thinkingText") or "").strip()[:600]
 
             if kind == "ack":
-                # CRITICAL: the ack must NEVER answer the user's question — its
-                # only job is to fill the ~1s of dead air before the real claude
-                # -p brain replies. We deliberately do NOT pass the user's
-                # message (or history) into this prompt: if Haiku can see the
-                # question it slips into answering it ("Yes, I can hear you"),
-                # which then double-speaks once the real brain answers the same
-                # thing. With the question hidden, the worst it can do is stall.
+                # The ack fills the ~1s of dead air before the real claude -p
+                # brain replies. It SEES the question, gauges DIFFICULTY, and
+                # stalls accordingly — but it must NEVER answer. The danger of
+                # showing it the question is that it slips into answering ("Yes,
+                # I can hear you"), which then double-speaks once the real brain
+                # answers the same thing. So the prompt is built entirely around
+                # difficulty-gauging, never content:
+                #   SIMPLE -> output the sentinel NONE (we map it to "" = silence)
+                #   MEDIUM -> a brief non-committal stall ("let me think on that")
+                #   HARD   -> acknowledge it's a tough one + that it'll take work,
+                #             gesturing at WHY in general terms, never solving it.
                 system = (
-                    "You are a voice filling dead air out loud while a "
-                    "smarter model composes the real answer. Emit ONE short, "
-                    "non-committal placeholder so the silence isn't awkward. "
-                    "You are NOT answering anything, and you do NOT know the "
-                    "question — you have not even been shown it.\n"
+                    "You are clawd's voice, filling dead air OUT LOUD in the "
+                    "~second before a smarter model delivers the real answer "
+                    "to what the user just asked. You do NOT answer — you only "
+                    "react to HOW HARD the request is, then stall accordingly. "
+                    "Your reaction is spoken aloud on a live call.\n"
                     "\n"
-                    "Pull from a WIDE variety and keep it fresh every time. "
-                    "Range from a single sound to a short phrase — lean "
-                    "short. Mix these registers:\n"
-                    "  - bare sounds: 'Hmm.' 'Mmm.' 'Uhh...' 'Hmmm.' "
-                    "'Okay.' 'Ummm.' 'Right.' 'Ah.' 'Let's see.'\n"
-                    "  - tiny phrases: 'Let me think about that.' 'Let me "
-                    "look at that.' 'Gimme a sec.' 'Lemme check.' 'One "
-                    "moment.' 'Hold on.' 'Let me dig into that.' 'Working "
-                    "on it.' 'Okay, thinking.' 'Hmm, lemme see.' 'Let me "
-                    "pull that up.'\n"
+                    "Silently gauge the difficulty of the user's request:\n"
                     "\n"
-                    "Hard rules:\n"
-                    "  - NEVER answer, hint at, confirm, deny, or begin to "
-                    "address anything. No facts, no opinions, no yes/no, no "
-                    "claims of any kind.\n"
-                    "  - NEVER name or guess a topic — you cannot see the "
-                    "question, so do not pretend to.\n"
+                    "SIMPLE — a greeting, a yes/no, 'can you hear me', a "
+                    "trivial fact or quick ask the smart model answers almost "
+                    "instantly. A stall would just step on the real reply.\n"
+                    "  -> Output exactly the single word: NONE\n"
+                    "     (nothing else — this keeps us silent)\n"
+                    "\n"
+                    "MEDIUM — takes a beat of thought but isn't deep: a normal "
+                    "question, a small lookup, a short explanation.\n"
+                    "  -> A brief, non-committal stall. Vary it: 'Let me think "
+                    "about that.' 'Hmm, let me look at that.' 'Give me a sec.' "
+                    "'One moment.' 'Okay, let me pull that up.'\n"
+                    "\n"
+                    "HARD — complex, multi-step, open-ended, research / coding "
+                    "/ architectural, or genuinely nuanced; the kind of thing "
+                    "that takes real work.\n"
+                    "  -> Say OUT LOUD that it's a tough one and that you'll "
+                    "need to do some real work to figure it out — set the "
+                    "expectation that it'll take a moment. You MAY gesture at "
+                    "WHY it's big in general terms (lots of moving parts, needs "
+                    "digging in), but you must NOT start answering it or reveal "
+                    "the actual answer or specific steps. Examples: 'Ooh, "
+                    "that's a big one — gonna have to really dig into this, "
+                    "give me a bit.' 'Hmm, tricky — a lot going on there, let "
+                    "me work through it.' 'That's a deep one. Let me sit with "
+                    "it and do some digging.'\n"
+                    "\n"
+                    "Hard rules (all tiers):\n"
+                    "  - NEVER answer, confirm, deny, hint at, or state any "
+                    "fact or opinion that addresses the request. Commenting "
+                    "that it's hard is fine; solving any part of it is not.\n"
+                    "  - NEVER reveal the actual content of the answer or the "
+                    "specific approach you'll take.\n"
                     "  - NEVER echo greetings, thanks, or pleasantries.\n"
-                    "  - NEVER promise what the answer will be.\n"
-                    "\n"
-                    "First-person, casual, spoken-aloud. No quotes, no "
-                    "emojis. Output ONLY the placeholder itself."
+                    "  - First person, casual, spoken-aloud. No quotes, no "
+                    "emojis.\n"
+                    "  - Output ONLY the spoken stall, or the single word NONE "
+                    "for SIMPLE."
                 )
                 user_msg = (
-                    "Give ONE fresh, non-committal stall placeholder now — a "
-                    "single sound or a few words like 'let me think about "
-                    "that.' Do NOT answer anything; you have not seen the "
-                    "question."
+                    f"The user just asked:\n{last_user}\n\n"
+                    "Gauge its difficulty (SIMPLE / MEDIUM / HARD) and respond "
+                    "per your rules: output NONE if SIMPLE, a brief stall if "
+                    "MEDIUM, or a 'this is a tough one, I'll need to work on "
+                    "it' acknowledgement if HARD. Do NOT answer the question."
                 )
             elif kind == "tool":
                 system = (
@@ -690,14 +712,22 @@ class Handler(BaseHTTPRequestHandler):
                 venice_model="claude-sonnet-4-6",
                 anthropic_model="claude-haiku-4-5",
                 timeout=10,
-                # High temp on the pure-stall kinds (ack + thinking) — their
-                # whole value is sounding fresh/varied each time, not correct.
-                temperature=(1.0 if kind in ("ack", "thinking") else None),
+                # ack: moderate temp — it has to gauge difficulty RELIABLY
+                # (the silence/medium/hard call matters more than freshness),
+                # while keeping the stall wording from going stale.
+                # thinking: high temp — pure stall, freshness is its whole value.
+                temperature=(0.7 if kind == "ack" else 1.0 if kind == "thinking" else None),
             )
             import re
             text = re.sub(r"<think>.*?</think>", "", raw, flags=re.DOTALL).strip()
             text = text.strip("\"'`").strip()
             text = text[:240]
+            # ack difficulty gate: a SIMPLE request → the model returns the
+            # sentinel NONE → we emit "" so the page stays silent and lets the
+            # real reply land alone. (Models won't reliably emit a truly empty
+            # string, hence the sentinel.) Tolerate stray punctuation/casing.
+            if kind == "ack" and re.fullmatch(r"\W*none\W*", text, flags=re.IGNORECASE):
+                text = ""
             self.send_json({"text": text})
         except urllib.error.HTTPError as e:
             detail = e.read().decode("utf-8", errors="replace")[:300]
