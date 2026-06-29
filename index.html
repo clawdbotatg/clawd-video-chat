@@ -3007,9 +3007,9 @@ async function onSend(opts = {}) {
   // an ack within ~1s instead of waiting for the main model's first token.
   // Opening the ack window buffers any real text deltas that arrive before
   // the ack response — guarantees ack speaks first. The server gauges the
-  // request's DIFFICULTY and tiers the stall: SIMPLE → silent (empty), MEDIUM
-  // → "let me think about that", HARD → "that's a big one, this'll take work".
-  // A silent (empty) ack just closes the window and the real reply plays.
+  // request's DIFFICULTY and tiers the stall: SIMPLE → a bare sound ("hmm"),
+  // MEDIUM → "let me think about that", HARD → "that's a big one, this'll take
+  // work". Never the actual answer.
   if (_ttsEnabled && !shouldSkipAck(text)) {
     openAckWindow();
     fillerSpeak({
@@ -3527,15 +3527,14 @@ const _GREETING_RE = /^(gm|gn|gn8|good\s+(morning|night|evening|afternoon|day)|h
 function shouldSkipAck(text) {
   const t = (text || "").trim();
   if (!t) return true;
-  if (_GREETING_RE.test(t)) return true; // bare greeting — obviously simple
+  if (_GREETING_RE.test(t)) return true; // bare greeting — just reply, no stall
   // Otherwise we DO fire the ack and let the server gauge difficulty:
-  //   SIMPLE  -> it returns "" (sentinel NONE) and the ack window closes with
-  //              no stall, so the real reply lands alone (no double-answer).
+  //   SIMPLE  -> a bare thinking sound ("hmm") so there's never dead air.
   //   MEDIUM  -> a brief "let me think about that" stall.
   //   HARD    -> "ooh, that's a big one, gonna take some work" acknowledgement.
-  // We no longer gate on length here: difficulty, not word count, decides
-  // whether clawd stalls — a terse "design a consensus protocol" is hard, a
-  // wordy "hey can you maybe tell me what time it is right now" is trivial.
+  // We no longer gate on length here: difficulty, not word count, decides how
+  // clawd stalls — a terse "design a consensus protocol" is hard, a wordy "hey
+  // can you maybe tell me what time it is right now" is trivial.
   return false;
 }
 

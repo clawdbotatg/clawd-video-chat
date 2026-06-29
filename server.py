@@ -13,6 +13,7 @@ No pip deps, stdlib only.
 import json
 import os
 import queue
+import random
 import re
 import subprocess
 import sys
@@ -590,7 +591,8 @@ class Handler(BaseHTTPRequestHandler):
                 # I can hear you"), which then double-speaks once the real brain
                 # answers the same thing. So the prompt is built entirely around
                 # difficulty-gauging, never content:
-                #   SIMPLE -> output the sentinel NONE (we map it to "" = silence)
+                #   SIMPLE -> a bare thinking sound ("hmm", "mmm", "uhh") — just
+                #             enough to cover the beat, never a word/answer.
                 #   MEDIUM -> a brief non-committal stall ("let me think on that")
                 #   HARD   -> acknowledge it's a tough one + that it'll take work,
                 #             gesturing at WHY in general terms, never solving it.
@@ -603,11 +605,13 @@ class Handler(BaseHTTPRequestHandler):
                     "\n"
                     "Silently gauge the difficulty of the user's request:\n"
                     "\n"
-                    "SIMPLE — a greeting, a yes/no, 'can you hear me', a "
-                    "trivial fact or quick ask the smart model answers almost "
-                    "instantly. A stall would just step on the real reply.\n"
-                    "  -> Output exactly the single word: NONE\n"
-                    "     (nothing else — this keeps us silent)\n"
+                    "SIMPLE — a yes/no, 'can you hear me', a trivial fact or "
+                    "quick ask the smart model answers almost instantly. A "
+                    "wordy stall would just step on the real reply.\n"
+                    "  -> Just a SHORT, bare thinking sound — one little noise, "
+                    "nothing more, no words: 'Hmm.' 'Hmmm.' 'Hrmm.' 'Mmm.' "
+                    "'Umm.' 'Uhh.' 'Mm-hm.' Lean very short. NOT a phrase, NOT "
+                    "'let me think' — just the sound.\n"
                     "\n"
                     "MEDIUM — takes a beat of thought but isn't deep: a normal "
                     "question, a small lookup, a short explanation.\n"
@@ -638,15 +642,16 @@ class Handler(BaseHTTPRequestHandler):
                     "  - NEVER echo greetings, thanks, or pleasantries.\n"
                     "  - First person, casual, spoken-aloud. No quotes, no "
                     "emojis.\n"
-                    "  - Output ONLY the spoken stall, or the single word NONE "
-                    "for SIMPLE."
+                    "  - Output ONLY the sound (SIMPLE) or the spoken stall "
+                    "(MEDIUM / HARD) — nothing else."
                 )
                 user_msg = (
                     f"The user just asked:\n{last_user}\n\n"
                     "Gauge its difficulty (SIMPLE / MEDIUM / HARD) and respond "
-                    "per your rules: output NONE if SIMPLE, a brief stall if "
-                    "MEDIUM, or a 'this is a tough one, I'll need to work on "
-                    "it' acknowledgement if HARD. Do NOT answer the question."
+                    "per your rules: a bare thinking sound ('hmm') if SIMPLE, a "
+                    "brief stall if MEDIUM, or a 'this is a tough one, I'll need "
+                    "to work on it' acknowledgement if HARD. Do NOT answer the "
+                    "question."
                 )
             elif kind == "tool":
                 system = (
@@ -722,12 +727,17 @@ class Handler(BaseHTTPRequestHandler):
             text = re.sub(r"<think>.*?</think>", "", raw, flags=re.DOTALL).strip()
             text = text.strip("\"'`").strip()
             text = text[:240]
-            # ack difficulty gate: a SIMPLE request → the model returns the
-            # sentinel NONE → we emit "" so the page stays silent and lets the
-            # real reply land alone. (Models won't reliably emit a truly empty
-            # string, hence the sentinel.) Tolerate stray punctuation/casing.
-            if kind == "ack" and re.fullmatch(r"\W*none\W*", text, flags=re.IGNORECASE):
-                text = ""
+            # SIMPLE acks are a bare thinking sound. Haiku almost always picks
+            # the SAME one ("Hmm."), so whenever the ack comes back as just a
+            # filler sound (or the old NONE sentinel), swap in a random one for
+            # variety on a live call. MEDIUM/HARD stalls have real words and
+            # won't match, so they pass through untouched.
+            if kind == "ack" and re.fullmatch(
+                    r"\W*(?:h+m+|m+h?|u+h+|u+m+|h+r+m+|e+r+m?|mm[-\s]?hm|none)\W*",
+                    text, flags=re.IGNORECASE):
+                text = random.choice(
+                    ["Hmm.", "Hmmm.", "Hrmm.", "Hummm.", "Mmm.", "Umm.",
+                     "Uhh.", "Mm-hm.", "Hm."])
             self.send_json({"text": text})
         except urllib.error.HTTPError as e:
             detail = e.read().decode("utf-8", errors="replace")[:300]
