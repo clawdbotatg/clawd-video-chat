@@ -3893,12 +3893,16 @@ function isLikelyEcho(text) {
   }
   if (best / ct.length >= ECHO_RUN_RATIO) return true;
   // Reordered / partially-misheard echo: most of the chunk's words still appear
-  // somewhere in clawd's recent speech (only for longer chunks, to stay safe).
-  if (ct.length >= 6) {
+  // somewhere in clawd's recent speech. Order-agnostic, so it's only safe for
+  // LONG chunks — a short real question that happens to reuse clawd's vocabulary
+  // ("is the session a transcript-capture hiccup?") would false-positive here, so
+  // we gate hard on length + a high overlap bar. Verbatim echo is already caught
+  // by the contiguous-run test above; this only mops up long, SR-garbled echo.
+  if (ct.length >= 12) {
     const sset = new Set(st);
     let hit = 0;
     for (const t of ct) if (sset.has(t)) hit++;
-    if (hit / ct.length >= 0.85) return true;
+    if (hit / ct.length >= 0.9) return true;
   }
   return false;
 }
