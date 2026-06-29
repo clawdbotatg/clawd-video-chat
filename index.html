@@ -3365,6 +3365,10 @@ function ttsEnqueue(text, kind = "real") {
   // Late ack after real has actually started playing → drop.
   if (kind === "ack" && _ttsRealAudioStarted) { ackTrace("DROP in ttsEnqueue: realAudioStarted"); return; }
 
+  // Remember what we're about to speak so the recognizer can't feed it back as
+  // a "user" turn once Web Speech finalizes it (see isLikelyEcho).
+  recordSpokenEcho(stripped);
+
   const turnId = _ttsTurnId;
   const blobPromise = ttsFetchChunk(stripped, turnId);
   if (kind === "ack") {
@@ -3736,13 +3740,13 @@ const $statusLabel = $statusPill ? $statusPill.querySelector(".label") : null;
 const $voiceOrb = document.getElementById("voice-orb");
 let _orbLvl = 0;
 
-// Two-word wake phrase: "okay claude" / "so claude" / "ok claude". The prefix is
-// REQUIRED — bare "claude" must NOT fire (guests on an AI podcast say it
-// constantly). We accept the common STT mis-hearings of the second word
-// (cloud/clawd/clyde/klaus/…). Matched against a rolling recent-speech window
+// Two-word wake phrase: "okay claude" / "so claude" / "ok claude" / "hey claude".
+// The prefix is REQUIRED — bare "claude" must NOT fire (guests on an AI podcast
+// say it constantly). We accept the common STT mis-hearings of the second word
+// (cloud/clawd/clad/clyde/klaus/…). Matched against a rolling recent-speech window
 // (see WAKE_WINDOW_MS) so the two words still match when SR splits them into
 // separate chunks — that chunk-split, not the prefix, was the main miss.
-const WAKE_RE = /\b(?:so|okay|ok)[\s,-]+(claude|clawd|claud|cloud|clyde|clod|clot|klaus|claus|clawed|clawde|claude?o|glaude)s?\b/i;
+const WAKE_RE = /\b(?:so|okay|ok|hey)[\s,-]+(claude|clawd|claud|clad|cloud|clyde|clod|clot|klaus|claus|clawed|clawde|claude?o|glaude)s?\b/i;
 const WAKE_STRIP_RE = new RegExp(WAKE_RE.source, "gi");  // strip every wake phrase from the captured command
 const WAKE_WINDOW_MS = 6000;        // join SR text from the last ~6s for wake matching + command capture (covers "talk first, then drop the wake word")
 const SILENCE_MS = 900;             // how long of TRUE silence after wake before submitting (snappy — below the ~1500 mid-sentence-cutoff floor, so it may submit on long natural pauses)
@@ -3760,6 +3764,20 @@ let _restartTimer = null;
 let _lastSpokeTs = 0;         // Date.now() of last TTS audio activity (echo gate)
 let _wakeManuallyPaused = false;  // user clicked the mic to take over
 let _pttActive = false;       // push-to-talk button held (backchannel ptt-down…ptt-up): capture without a wake word, never auto-submit on silence
+
+// ── Self-echo cancellation (content-based) ─────────────────────────────────
+// The call's audio rig loops clawd's own TTS back into the mic (TTS → BlackHole
+// 2ch = the recognizer's input), and Web Speech finalizes those words SECONDS
+// after they were spoken — long after the time-based inEchoWindow() gate has
+// closed. So clawd's last answer leaks in as "user" speech, gets seeded into the
+// next wake buffer, and is re-sent to the brain, which then "responds to old
+// messages." The time gate can't catch this (the chunk fires too late); the only
+// robust defense is to drop any finalized chunk that matches what clawd just
+// SAID. We know that exactly — every spoken chunk passes through ttsEnqueue.
+const ECHO_BUF_MS = 25000;     // remember clawd's spoken words this long (covers SR finalization lag on a long reply)
+const ECHO_MIN_TOKENS = 4;     // never echo-drop very short chunks — real interjections ("yes", "stop claude") must pass
+const ECHO_RUN_RATIO = 0.55;   // ≥55% of the chunk found as one contiguous run of clawd's recent speech → it's clawd hearing itself
+let _spokenEcho = [];          // [{ts, tokens:[…]}] of TTS chunks clawd has voiced, pruned by age
 
 // Rolling room transcript — every finalized SR chunk lands here (gated by
 // the echo window so clawd's own voice isn't captured as user speech).
@@ -3840,6 +3858,49 @@ function setPillState(state, label) {
 function inEchoWindow() {
   if (_ttsAudio) return true;
   return _lastSpokeTs && (Date.now() - _lastSpokeTs) < ECHO_TAIL_MS;
+}
+
+function _echoTokens(s) {
+  return (s || "").toLowerCase().replace(/[^a-z0-9]+/g, " ").trim().split(/\s+/).filter(Boolean);
+}
+
+// Record a chunk clawd is about to SPEAK, so we can recognize it if SR hears it
+// back. Called from ttsEnqueue with the already-stripped (markup-free) text.
+function recordSpokenEcho(text) {
+  const toks = _echoTokens(text);
+  if (!toks.length) return;
+  _spokenEcho.push({ ts: Date.now(), tokens: toks });
+  const cutoff = Date.now() - ECHO_BUF_MS;
+  while (_spokenEcho.length && _spokenEcho[0].ts < cutoff) _spokenEcho.shift();
+}
+
+// Is this finalized SR chunk really clawd hearing its own voice? Match the
+// chunk against the words clawd has spoken in the last ~25s. Content-based, so
+// it catches echo no matter how late Web Speech finalizes it.
+function isLikelyEcho(text) {
+  const ct = _echoTokens(text);
+  if (ct.length < ECHO_MIN_TOKENS) return false;   // too short to attribute confidently — let it through
+  const cutoff = Date.now() - ECHO_BUF_MS;
+  const st = [];
+  for (const e of _spokenEcho) if (e.ts >= cutoff) st.push(...e.tokens);
+  if (st.length < ct.length) return false;
+  // Longest contiguous run of the chunk found verbatim inside clawd's speech.
+  let best = 0;
+  for (let i = 0; i < st.length && best < ct.length; i++) {
+    let run = 0;
+    while (run < ct.length && i + run < st.length && st[i + run] === ct[run]) run++;
+    if (run > best) best = run;
+  }
+  if (best / ct.length >= ECHO_RUN_RATIO) return true;
+  // Reordered / partially-misheard echo: most of the chunk's words still appear
+  // somewhere in clawd's recent speech (only for longer chunks, to stay safe).
+  if (ct.length >= 6) {
+    const sset = new Set(st);
+    let hit = 0;
+    for (const t of ct) if (sset.has(t)) hit++;
+    if (hit / ct.length >= 0.85) return true;
+  }
+  return false;
 }
 
 function startWakeRecog() {
@@ -4059,6 +4120,16 @@ function pttUp() {
 function handleFinalChunk(rawText) {
   const text = (rawText || "").trim();
   if (!text) return;
+  // Self-echo guard: the audio rig loops clawd's TTS back into the mic, and Web
+  // Speech finalizes those words seconds late — after inEchoWindow() has closed —
+  // so clawd's own last answer would otherwise enter the transcript, seed the
+  // next wake buffer, and get re-sent to the brain ("responding to old messages").
+  // Drop any chunk that substantially matches what clawd just spoke. (PTT ducks
+  // TTS, so a real push-to-talk utterance won't match and still passes.)
+  if (isLikelyEcho(text)) {
+    logStt({ echo: true, dropped: text });
+    return;
+  }
   // Every finalized chunk feeds the rolling transcript that the wake detector's
   // recent-window match reads (see onresult). Arming itself happens there,
   // against the combined window; here we only grow the command once armed.
