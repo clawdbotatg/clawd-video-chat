@@ -622,16 +622,30 @@ class Handler(BaseHTTPRequestHandler):
                     "HARD — complex, multi-step, open-ended, research / coding "
                     "/ architectural, or genuinely nuanced; the kind of thing "
                     "that takes real work.\n"
-                    "  -> Say OUT LOUD that it's a tough one and that you'll "
-                    "need to do some real work to figure it out — set the "
-                    "expectation that it'll take a moment. You MAY gesture at "
-                    "WHY it's big in general terms (lots of moving parts, needs "
-                    "digging in), but you must NOT start answering it or reveal "
-                    "the actual answer or specific steps. Examples: 'Ooh, "
-                    "that's a big one — gonna have to really dig into this, "
-                    "give me a bit.' 'Hmm, tricky — a lot going on there, let "
-                    "me work through it.' 'That's a deep one. Let me sit with "
-                    "it and do some digging.'\n"
+                    "  -> The BEST hard stall briefly MIRRORS THE ASK back in "
+                    "your own casual words — a quick TL;DR of what THEY want — "
+                    "then signals it'll take a moment. Restating the request is "
+                    "encouraged and is NOT answering: e.g. 'Okay, so you want me "
+                    "to rework the audio routing and add fallbacks — that's a "
+                    "chunky one, gimme a sec.' 'Right, untangling why the bridge "
+                    "drops the gateway — let me actually dig into that.' This "
+                    "reflection is what makes each stall DIFFERENT, so prefer it.\n"
+                    "  -> You may instead (or also) just signal it's a real one "
+                    "and you need a beat. But VARY THE WORDING HARD. Do NOT keep "
+                    "reaching for the same opener. Rotate through openers like: "
+                    "'Oof, okay.' 'Right, so.' 'Alright.' 'Hmm, juicy one.' "
+                    "'Ooh.' 'Okay, meaty.' 'Buckle up.' 'Yeah, this'll take a "
+                    "sec.' 'Let me actually think.' 'Big swing here.' 'Spicy.' "
+                    "'Okay this is real.' 'Genuinely gotta work for this one.' "
+                    "'Heh, not a quick one.' 'Deep cut.' 'Solid one.' 'Gonna "
+                    "have to chew on this.' 'Whew.' 'Layered, this.' 'Real "
+                    "homework here.' — and phrasings well beyond this list.\n"
+                    "  -> BANNED because they're overused: 'a lot of moving "
+                    "parts', 'big one' as your default, 'lots going on'. Reach "
+                    "for something fresher every time.\n"
+                    "  -> You must NOT start answering it or reveal the actual "
+                    "answer or the specific steps you'll take — mirroring WHAT "
+                    "they asked is fine; giving any of the HOW/answer is not.\n"
                     "\n"
                     "Hard rules (all tiers):\n"
                     "  - NEVER answer, confirm, deny, hint at, or state any "
@@ -649,9 +663,10 @@ class Handler(BaseHTTPRequestHandler):
                     f"The user just asked:\n{last_user}\n\n"
                     "Gauge its difficulty (SIMPLE / MEDIUM / HARD) and respond "
                     "per your rules: a bare thinking sound ('hmm') if SIMPLE, a "
-                    "brief stall if MEDIUM, or a 'this is a tough one, I'll need "
-                    "to work on it' acknowledgement if HARD. Do NOT answer the "
-                    "question."
+                    "brief stall if MEDIUM, or — if HARD — briefly mirror back "
+                    "what they're asking for in your own words plus a 'gimme a "
+                    "sec' (fresh wording, never 'moving parts'/'big one'). Do "
+                    "NOT answer the question."
                 )
             elif kind == "tool":
                 system = (
@@ -721,7 +736,7 @@ class Handler(BaseHTTPRequestHandler):
                 # (the silence/medium/hard call matters more than freshness),
                 # while keeping the stall wording from going stale.
                 # thinking: high temp — pure stall, freshness is its whole value.
-                temperature=(0.7 if kind == "ack" else 1.0 if kind == "thinking" else None),
+                temperature=(0.85 if kind == "ack" else 1.0 if kind == "thinking" else None),
             )
             import re
             text = re.sub(r"<think>.*?</think>", "", raw, flags=re.DOTALL).strip()
