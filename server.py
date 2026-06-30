@@ -603,6 +603,15 @@ class Handler(BaseHTTPRequestHandler):
                     "react to HOW HARD the request is, then stall accordingly. "
                     "Your reaction is spoken aloud on a live call.\n"
                     "\n"
+                    "GOLDEN RULE — your length must match the WAIT. You are "
+                    "covering a gap of silence: the bigger/longer the smart "
+                    "model's job, the LONGER you should talk; the quicker its "
+                    "answer, the SHORTER you should be. Picture how long it'll "
+                    "take to think, and fill exactly that. Too short over a long "
+                    "think = awkward silence; too long over a quick answer = you "
+                    "run into the real reply. So scale yourself continuously, "
+                    "not in fixed sizes.\n"
+                    "\n"
                     "Silently gauge the difficulty of the user's request:\n"
                     "\n"
                     "SIMPLE — a yes/no, 'can you hear me', a trivial fact or "
@@ -622,14 +631,27 @@ class Handler(BaseHTTPRequestHandler):
                     "HARD — complex, multi-step, open-ended, research / coding "
                     "/ architectural, or genuinely nuanced; the kind of thing "
                     "that takes real work.\n"
-                    "  -> The BEST hard stall briefly MIRRORS THE ASK back in "
-                    "your own casual words — a quick TL;DR of what THEY want — "
-                    "then signals it'll take a moment. Restating the request is "
-                    "encouraged and is NOT answering: e.g. 'Okay, so you want me "
-                    "to rework the audio routing and add fallbacks — that's a "
-                    "chunky one, gimme a sec.' 'Right, untangling why the bridge "
-                    "drops the gateway — let me actually dig into that.' This "
-                    "reflection is what makes each stall DIFFERENT, so prefer it.\n"
+                    "  -> The BEST hard stall MIRRORS THE ASK back in your own "
+                    "casual words — a TL;DR of what THEY want — then signals "
+                    "it'll take a moment. Restating the request is encouraged "
+                    "and is NOT answering. This reflection is what makes each "
+                    "stall DIFFERENT, so prefer it.\n"
+                    "  -> SCALE THE MIRROR TO THE EXPECTED THINK TIME (golden "
+                    "rule). For a hard-but-fairly-contained ask the model will "
+                    "answer in a few seconds, keep the mirror to ONE short "
+                    "clause: 'Right, untangling the gateway dropout — gimme a "
+                    "sec.' For a genuinely deep, multi-step, research / coding / "
+                    "architectural ask that'll take real time, go LONGER and "
+                    "more detailed — walk back through the whole ask, naming "
+                    "each part, to fill the bigger gap: 'Okay, so you want me to "
+                    "rework the whole audio routing, stop the bridge from "
+                    "dropping the gateway, AND layer in automatic fallbacks "
+                    "across the blackhole devices — yeah, that's a real one, "
+                    "let me genuinely dig in here.' The harder it is, the more "
+                    "of their ask you play back — but SUMMARIZE each part in a "
+                    "few words, don't transcribe it verbatim, and ALWAYS finish "
+                    "your sentence and land the closing stall ('let me dig in', "
+                    "'gimme a sec'). Never trail off mid-thought.\n"
                     "  -> You may instead (or also) just signal it's a real one "
                     "and you need a beat. But VARY THE WORDING HARD. Do NOT keep "
                     "reaching for the same opener. Rotate through openers like: "
@@ -661,12 +683,15 @@ class Handler(BaseHTTPRequestHandler):
                 )
                 user_msg = (
                     f"The user just asked:\n{last_user}\n\n"
-                    "Gauge its difficulty (SIMPLE / MEDIUM / HARD) and respond "
-                    "per your rules: a bare thinking sound ('hmm') if SIMPLE, a "
-                    "brief stall if MEDIUM, or — if HARD — briefly mirror back "
-                    "what they're asking for in your own words plus a 'gimme a "
-                    "sec' (fresh wording, never 'moving parts'/'big one'). Do "
-                    "NOT answer the question."
+                    "Gauge its difficulty (SIMPLE / MEDIUM / HARD) and how long "
+                    "the smart model will take, then respond per your rules, "
+                    "scaling your LENGTH to that wait (golden rule): a bare "
+                    "thinking sound ('hmm') if SIMPLE, a brief stall if MEDIUM, "
+                    "or — if HARD — mirror back what they're asking in your own "
+                    "words (short clause if it'll answer fast; longer, naming "
+                    "each part of the ask, if it'll take real thinking) plus a "
+                    "'gimme a sec' (fresh wording, never 'moving parts'/'big "
+                    "one'). Do NOT answer the question."
                 )
             elif kind == "tool":
                 system = (
@@ -727,7 +752,11 @@ class Handler(BaseHTTPRequestHandler):
 
             raw = _llm_chat_with_fallback(
                 msgs,
-                max_tokens=80,
+                # Headroom for the longest HARD mirror (it scales up to a full
+                # play-back of a deep multi-part ask); short stalls stay short.
+                # Generous so the verbose case can land its closer instead of
+                # truncating mid-word — the prompt keeps it from rambling.
+                max_tokens=200,
                 bankr_model="claude-haiku-4.5",
                 venice_model="claude-sonnet-4-6",
                 anthropic_model="claude-haiku-4-5",
@@ -741,7 +770,14 @@ class Handler(BaseHTTPRequestHandler):
             import re
             text = re.sub(r"<think>.*?</think>", "", raw, flags=re.DOTALL).strip()
             text = text.strip("\"'`").strip()
-            text = text[:240]
+            # Cap generously — the HARD mirror scales up to a full multi-part
+            # play-back to cover a long think; 240 chopped those mid-word. If it
+            # still overruns, cut at the last sentence boundary so we never end
+            # on a half-word.
+            if len(text) > 500:
+                clipped = text[:500]
+                cut = max(clipped.rfind("."), clipped.rfind("!"), clipped.rfind("?"))
+                text = clipped[:cut + 1] if cut > 200 else clipped
             # SIMPLE acks are a bare thinking sound. Haiku almost always picks
             # the SAME one ("Hmm."), so whenever the ack comes back as just a
             # filler sound (or the old NONE sentinel), swap in a random one for
