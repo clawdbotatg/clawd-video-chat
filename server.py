@@ -10,9 +10,12 @@ virtual camera, and select that camera in Zoom.
 
 No pip deps, stdlib only.
 """
+import hmac
 import json
 import os
 import queue
+import socket
+import ssl
 import random
 import re
 import subprocess
@@ -20,6 +23,7 @@ import sys
 import threading
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from http.server import BaseHTTPRequestHandler
 from pathlib import Path
@@ -82,11 +86,15 @@ STT_LOG_PATH = os.path.expanduser(
     os.environ.get("STT_LOG_PATH", "~/clawd/clawd-harness/projects/claude-p-agent/stt-log.jsonl"))
 
 
-def load_stt_rows():
-    """Parse the JSONL STT log into a list of dicts (oldest-first). Bad lines skipped."""
+def load_stt_rows(path=None):
+    """Parse a JSONL STT log into a list of dicts (oldest-first). Bad lines skipped.
+
+    Defaults to the global firehose (STT_LOG_PATH); pass a per-meeting file to
+    read just that meeting's slice.
+    """
     rows = []
     try:
-        with open(STT_LOG_PATH, encoding="utf-8") as f:
+        with open(path or STT_LOG_PATH, encoding="utf-8") as f:
             for line in f:
                 line = line.strip()
                 if not line:
@@ -98,6 +106,48 @@ def load_stt_rows():
     except FileNotFoundError:
         pass
     return rows
+
+
+# ── Per-meeting transcripts ─────────────────────────────────────────────────────
+# The STT log above is the always-on FIREHOSE: every non-echo chunk ever heard,
+# one append-only file. A "meeting" carves a named slice out of it. When a meeting
+# is active, handle_stt_log ALSO appends each heard line to a per-meeting file, so
+# `meet summary` / `stt`-style reads can scope to exactly one Google Meet without
+# grepping timestamps out of the firehose. State is a tiny pointer file (current.json)
+# so it survives a server restart mid-call. Lives in the brain's cwd → readable by
+# the clawd -p brain with no permission prompt (same reasoning as STT_LOG_PATH).
+MEETINGS_DIR = os.path.expanduser(
+    os.environ.get("MEETINGS_DIR",
+                   "~/clawd/clawd-harness/projects/claude-p-agent/meetings"))
+CURRENT_MEETING_PATH = os.path.join(MEETINGS_DIR, "current.json")
+
+
+def meeting_file(mid):
+    """Path to one meeting's transcript JSONL."""
+    return os.path.join(MEETINGS_DIR, f"{mid}.jsonl")
+
+
+def read_current_meeting():
+    """The active meeting dict {id,title,url,started,started_ts}, or None."""
+    try:
+        with open(CURRENT_MEETING_PATH, encoding="utf-8") as f:
+            m = json.load(f)
+        return m if m.get("id") else None
+    except (FileNotFoundError, ValueError):
+        return None
+
+
+def write_current_meeting(meeting):
+    """Set (meeting dict) or clear (None) the active-meeting pointer."""
+    os.makedirs(MEETINGS_DIR, exist_ok=True)
+    if meeting is None:
+        try:
+            os.remove(CURRENT_MEETING_PATH)
+        except FileNotFoundError:
+            pass
+        return
+    with open(CURRENT_MEETING_PATH, "w", encoding="utf-8") as f:
+        json.dump(meeting, f, ensure_ascii=False)
 
 
 # ── Load gateway config from ~/.openclaw/openclaw.json ───────────────────────
@@ -176,6 +226,59 @@ TTS_INSTRUCTIONS = (
 
 
 PORT = int(os.environ.get("PORT", "7900"))
+
+
+def _page_token():
+    """LAN auth key for this page (?k=<token>). Loopback never needs it.
+
+    CLAWD_PAGE_TOKEN overrides; the default is the ?k= already embedded in
+    OPENCLAW_WS_URL — i.e. the backchannel proxy key — so the whole rig
+    shares ONE LAN key and the backchannel page can reuse its own token when
+    it POSTs our /trigger-* endpoints cross-origin. Empty → LAN access is
+    refused outright (fail closed); loopback still works.
+    """
+    tok = os.environ.get("CLAWD_PAGE_TOKEN", "")
+    if tok:
+        return tok
+    try:
+        q = urllib.parse.parse_qs(
+            urllib.parse.urlsplit(os.environ.get("OPENCLAW_WS_URL", "")).query)
+        return (q.get("k") or [""])[0]
+    except Exception:
+        return ""
+
+
+PAGE_TOKEN = _page_token()
+
+# ── Optional HTTPS listener ──────────────────────────────────────────────────
+# Plain http on a LAN IP is not a secure origin, so Chrome strips
+# navigator.mediaDevices (no mic / SR / setSinkId) for remote visitors. When a
+# cert pair exists (mkcert-minted, see certs/), we ALSO serve the same Handler
+# over TLS on TLS_PORT. The http listener stays untouched for the on-box rig.
+# TLS visitors get a wss:// gateway URL from /config (an https page can't open
+# ws:// — mixed content), pointing at the backchannel proxy's TLS twin.
+TLS_PORT = int(os.environ.get("CLAWD_TLS_PORT", str(PORT + 1)))
+TLS_CERT = os.environ.get("CLAWD_TLS_CERT",
+                          str(Path(__file__).parent / "certs" / "lan.pem"))
+TLS_KEY = os.environ.get("CLAWD_TLS_KEY",
+                         str(Path(__file__).parent / "certs" / "lan-key.pem"))
+
+
+def _wss_variant(ws_url):
+    """The wss:// twin of a ws:// gateway URL — same host/query, port+1 (the
+    backchannel proxy serves TLS on PROXY_TLS_PORT = its ws port + 1).
+    OPENCLAW_WSS_URL overrides if the convention doesn't fit."""
+    override = os.environ.get("OPENCLAW_WSS_URL")
+    if override:
+        return override
+    try:
+        parts = urllib.parse.urlsplit(ws_url)
+        if parts.scheme != "ws" or not parts.port:
+            return ws_url
+        netloc = f"{parts.hostname}:{parts.port + 1}"
+        return urllib.parse.urlunsplit(("wss", netloc, parts.path, parts.query, parts.fragment))
+    except Exception:
+        return ws_url
 
 
 def _llm_chat_with_fallback(messages, max_tokens, bankr_model, venice_model,
@@ -277,7 +380,39 @@ class Handler(BaseHTTPRequestHandler):
     def log_message(self, fmt, *args):
         print(f"[{self.address_string()}] {fmt % args}")
 
+    def _authorized(self):
+        """LAN auth gate. Loopback (the rig's own Chrome, slop-bridge, the
+        backchannel server) is always allowed. Anyone else must present the
+        rig key — ?k=<PAGE_TOKEN> in the URL, or the clawd_k cookie that the
+        page's first tokened load set (so the page's same-origin fetches and
+        EventSource pass without threading ?k= through every call site).
+        The page can drive clawd — incl. the full-access flip — so this
+        fails CLOSED: no token configured means no LAN access at all."""
+        if self.client_address[0] in ("127.0.0.1", "::1"):
+            return True
+        if not PAGE_TOKEN:
+            return False
+        try:
+            qs = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query)
+            k = (qs.get("k") or [""])[0]
+        except Exception:
+            k = ""
+        if k and hmac.compare_digest(k, PAGE_TOKEN):
+            self._set_auth_cookie = True
+            return True
+        for part in (self.headers.get("Cookie") or "").split(";"):
+            name, _, val = part.strip().partition("=")
+            if name == "clawd_k" and hmac.compare_digest(val, PAGE_TOKEN):
+                return True
+        return False
+
+    def _reject_unauthorized(self):
+        self.send_json({"error": "missing or bad ?k= token"}, status=403)
+
     def do_GET(self):
+        if not self._authorized():
+            self._reject_unauthorized()
+            return
         path = self.path.split("?", 1)[0]
         if path in ("/", "/index.html"):
             self.serve_file("index.html", "text/html; charset=utf-8")
@@ -286,11 +421,20 @@ class Handler(BaseHTTPRequestHandler):
         elif path == "/config":
             cfg = resolve_gateway_settings()
             cfg.pop("bankrKey", None)  # keep API key server-side only
+            ws_url = cfg.get("wsUrl") or ""
+            if getattr(self.server, "is_tls", False):
+                # https page → must use the wss twin (mixed content rule)
+                ws_url = _wss_variant(ws_url)
+            cfg["wsUrl"] = self.rewrite_ws_host(ws_url)
             self.send_json(cfg)
         elif path == "/api/session-stats":
             self.handle_session_stats()
         elif path == "/health":
             self.send_json({"status": "ok"})
+        elif path == "/api/meeting/status":
+            self.handle_meeting_status()
+        elif path == "/api/meeting/list":
+            self.handle_meeting_list()
         elif path == "/events":
             self.send_response(200)
             self.send_header("Content-Type", "text/event-stream")
@@ -331,6 +475,9 @@ class Handler(BaseHTTPRequestHandler):
             self.send_error(404)
 
     def do_POST(self):
+        if not self._authorized():
+            self._reject_unauthorized()
+            return
         path = self.path.split("?", 1)[0]
         if path == "/api/autotitle":
             self.handle_autotitle()
@@ -342,6 +489,16 @@ class Handler(BaseHTTPRequestHandler):
             self.handle_stt_log()
         elif path == "/api/ask-transcript":
             self.handle_ask_transcript()
+        elif path == "/api/should-respond":
+            self.handle_should_respond()
+        elif path == "/api/debug":
+            self.handle_debug()
+        elif path == "/api/meeting/start":
+            self.handle_meeting_start()
+        elif path == "/api/meeting/stop":
+            self.handle_meeting_stop()
+        elif path == "/api/meeting/summary":
+            self.handle_meeting_summary()
         elif path == "/trigger-mic":
             length = int(self.headers.get("Content-Length", 0))
             self.rfile.read(length)
@@ -392,6 +549,22 @@ class Handler(BaseHTTPRequestHandler):
             self.send_header("Content-Type", "application/json")
             self.end_headers()
             self.wfile.write(b'{"ok":true}')
+        elif path in ("/trigger-phone", "/trigger-trusted"):
+            # Backchannel control buttons: relay an SSE toggle to the voice page,
+            # which flips phone-call mode / full-access. Cross-origin no-cors POST,
+            # so mirror /trigger-stop's CORS.
+            try:
+                length = int(self.headers.get("Content-Length", 0))
+                if length:
+                    self.rfile.read(length)
+            except Exception:
+                pass
+            push_event("toggle-phone" if path.endswith("phone") else "toggle-trusted")
+            self.send_response(200)
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(b'{"ok":true}')
         else:
             self.send_error(404)
 
@@ -421,11 +594,49 @@ class Handler(BaseHTTPRequestHandler):
             rec["text"] = text
         try:
             os.makedirs(os.path.dirname(STT_LOG_PATH), exist_ok=True)
+            line = json.dumps(rec, ensure_ascii=False) + "\n"
             with open(STT_LOG_PATH, "a", encoding="utf-8") as f:
-                f.write(json.dumps(rec, ensure_ascii=False) + "\n")
+                f.write(line)
+            # If a Google Meet is in progress, mirror this line into its own
+            # transcript so the meeting reads as a clean slice. Best-effort: a
+            # per-meeting write failure must never break the firehose/call.
+            meeting = read_current_meeting()
+            if meeting:
+                try:
+                    with open(meeting_file(meeting["id"]), "a", encoding="utf-8") as mf:
+                        mf.write(line)
+                except Exception:
+                    pass
         except Exception as e:
             self.send_json({"ok": False, "error": str(e)}, status=500)
             return
+        # Mirror to the live debug feed (SSE → backchannel page) so the user can
+        # watch what clawd hears from their phone. Best-effort; never break logging.
+        try:
+            if rec.get("wake"):
+                push_event(json.dumps({"ev": "vdbg", "kind": "sent", "msg": rec.get("sent", "")}))
+            elif rec.get("text"):
+                push_event(json.dumps({"ev": "vdbg", "kind": "heard", "msg": rec["text"]}))
+        except Exception:
+            pass
+        self.send_json({"ok": True})
+
+    def handle_debug(self):
+        """Fan a debug line out to the live SSE feed (→ backchannel page) so the
+        user can watch barge/gate/mic/phone events from their phone. Body:
+        {kind: str, msg: str}. Fire-and-forget from the voice page; nothing is
+        persisted. Non-STT companion to /api/stt-log's auto-push."""
+        try:
+            length = int(self.headers.get("Content-Length", 0))
+            body = json.loads(self.rfile.read(length) or b"{}")
+        except Exception:
+            body = {}
+        kind = (body.get("kind") or "dbg").strip()[:24]
+        msg = (body.get("msg") or "").strip()[:400]
+        try:
+            push_event(json.dumps({"ev": "vdbg", "kind": kind, "msg": msg}))
+        except Exception:
+            pass
         self.send_json({"ok": True})
 
     def handle_ask_transcript(self):
@@ -523,6 +734,247 @@ class Handler(BaseHTTPRequestHandler):
             import re
             answer = re.sub(r"<think>.*?</think>", "", raw, flags=re.DOTALL).strip()
             self.send_json({"answer": answer, "model": model, "lines": len(picked)})
+        except Exception as e:
+            self.send_json({"error": str(e)}, status=500)
+
+    def handle_should_respond(self):
+        """Phone-call turn gate. Given the latest user utterance (+ a little
+        recent dialogue), a cheap fast model decides whether clawd should respond
+        AT ALL — so continuous-conversation ("phone") mode doesn't reply to
+        thinking-aloud, side-chatter, or nothing-to-add. The page calls this on
+        every end-of-turn before it escalates to the (expensive) brain.
+
+        Body: {utterance: str, history?: [{role, content}]}. Returns
+        {respond: bool, reason: str}. On ANY error → {respond: true}: a gate
+        hiccup must never make clawd go silent mid-conversation.
+        """
+        try:
+            length = int(self.headers.get("Content-Length", 0))
+            body = json.loads(self.rfile.read(length) or b"{}")
+        except Exception:
+            body = {}
+        utterance = (body.get("utterance") or "").strip()
+        if not utterance:
+            self.send_json({"respond": False, "reason": "empty"})
+            return
+        history = body.get("history") or []
+        convo = []
+        for h in history[-8:]:
+            role = "clawd" if h.get("role") == "assistant" else "them"
+            txt = (h.get("content") or "").strip()
+            if txt:
+                convo.append(f"{role}: {txt}")
+        convo_txt = "\n".join(convo) if convo else "(start of call)"
+
+        system = (
+            "You are the turn-taking reflex of a voice AI ('clawd') on a live, "
+            "phone-style call. You see recent dialogue and the latest thing the "
+            "other person said (mic speech-to-text — it may be misheard or cut "
+            "off). Decide if clawd should SPEAK NOW. Answer YES if they finished "
+            "a thought and are handing over the floor or expecting a reply. "
+            "Answer NO if they are clearly mid-sentence / thinking aloud (a "
+            "trailing 'um', 'so...', 'let me', or an obvious fragment), if it is "
+            "side-chatter not aimed at clawd, or if there is genuinely nothing "
+            "worth saying. When unsure, lean YES — a real conversation keeps "
+            "moving. Reply with STRICT JSON only: "
+            '{"respond": true|false, "reason": "<a few words>"}'
+        )
+        user_msg = (
+            f"Recent dialogue:\n{convo_txt}\n\n"
+            f"They just said: \"{utterance}\"\n\nShould clawd respond now?"
+        )
+        try:
+            raw = _llm_chat_with_fallback(
+                messages=[
+                    {"role": "system", "content": system},
+                    {"role": "user", "content": user_msg},
+                ],
+                max_tokens=40,
+                bankr_model="claude-haiku-4.5",
+                venice_model="llama-3.3-70b",
+                anthropic_model="claude-haiku-4-5-20251001",
+                timeout=6,
+                temperature=0,
+            )
+        except Exception as e:
+            self.send_json({"respond": True, "reason": f"gate error: {e}"})
+            return
+
+        import re
+        cleaned = re.sub(r"<think>.*?</think>", "", raw or "", flags=re.DOTALL).strip()
+        respond, reason = True, ""
+        m = re.search(r"\{.*\}", cleaned, re.DOTALL)
+        if m:
+            try:
+                j = json.loads(m.group(0))
+                respond = bool(j.get("respond", True))
+                reason = str(j.get("reason", ""))[:80]
+            except Exception:
+                # Malformed JSON: fall back to a keyword read, biased to YES.
+                low = cleaned.lower()
+                respond = not ('"respond": false' in low or '"respond":false' in low)
+        else:
+            # No JSON at all — read a bare yes/no, defaulting to YES.
+            low = cleaned.lower()
+            respond = not (low.startswith("no") or low == "false" or "respond: no" in low)
+        self.send_json({"respond": respond, "reason": reason or cleaned[:80]})
+
+    # ── Per-meeting transcript endpoints ────────────────────────────────────
+    def handle_meeting_start(self):
+        """Begin a meeting: stamp an id, point current.json at it, open its file.
+
+        Body: {title?, url?}. If a meeting is already active it is stopped first
+        (one meeting at a time). Returns {id, title, url, started}.
+        """
+        try:
+            length = int(self.headers.get("Content-Length", 0))
+            body = json.loads(self.rfile.read(length) or b"{}")
+        except Exception:
+            body = {}
+        now = time.time()
+        mid = time.strftime("%Y%m%d-%H%M%S", time.localtime(now))
+        meeting = {
+            "id": mid,
+            "title": (body.get("title") or "").strip() or "Meeting",
+            "url": (body.get("url") or "").strip(),
+            "started": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(now)),
+            "started_ts": int(now * 1000),
+        }
+        try:
+            os.makedirs(MEETINGS_DIR, exist_ok=True)
+            # touch the transcript file so reads don't 404 before the first line
+            open(meeting_file(mid), "a", encoding="utf-8").close()
+            write_current_meeting(meeting)
+        except Exception as e:
+            self.send_json({"error": str(e)}, status=500)
+            return
+        self.send_json({"ok": True, **meeting})
+
+    def handle_meeting_stop(self):
+        """End the active meeting: clear current.json, report line count + span."""
+        meeting = read_current_meeting()
+        if not meeting:
+            self.send_json({"ok": True, "active": False})
+            return
+        rows = load_stt_rows(meeting_file(meeting["id"]))
+        heard = [r for r in rows if not r.get("wake")]
+        write_current_meeting(None)
+        span_min = 0.0
+        if rows:
+            span_min = (rows[-1].get("ts", 0) - meeting.get("started_ts", rows[0].get("ts", 0))) / 60000.0
+        self.send_json({"ok": True, "id": meeting["id"], "title": meeting.get("title"),
+                        "lines": len(heard), "minutes": round(span_min, 1)})
+
+    def handle_meeting_status(self):
+        """Is a meeting active? How much has been captured so far?"""
+        meeting = read_current_meeting()
+        if not meeting:
+            self.send_json({"active": False})
+            return
+        rows = load_stt_rows(meeting_file(meeting["id"]))
+        heard = sum(1 for r in rows if not r.get("wake"))
+        self.send_json({"active": True, "id": meeting["id"], "title": meeting.get("title"),
+                        "url": meeting.get("url"), "started": meeting.get("started"),
+                        "lines": heard})
+
+    def handle_meeting_list(self):
+        """List past meetings (newest first) from the meetings dir."""
+        out = []
+        try:
+            names = sorted(
+                (n for n in os.listdir(MEETINGS_DIR)
+                 if n.endswith(".jsonl") and n != "current.json"),
+                reverse=True)
+        except FileNotFoundError:
+            names = []
+        current = read_current_meeting()
+        for n in names[:50]:
+            mid = n[:-len(".jsonl")]
+            rows = load_stt_rows(os.path.join(MEETINGS_DIR, n))
+            heard = sum(1 for r in rows if not r.get("wake"))
+            out.append({"id": mid, "lines": heard,
+                        "active": bool(current and current["id"] == mid)})
+        self.send_json({"meetings": out})
+
+    def handle_meeting_summary(self):
+        """Summarize a meeting transcript via the cheap Bankr LLM (Haiku).
+
+        Body: {id?, model?}. Defaults to the active meeting. Returns a structured
+        recap (overview, key points, decisions, action items) grounded ONLY in
+        the transcript. Counterpart to ask-transcript, but whole-meeting scope.
+        """
+        bankr_key = os.environ.get("BANKR_LLM_KEY", "")
+        if not bankr_key:
+            self.send_json({"error": "no bankr key"}, status=503)
+            return
+        try:
+            length = int(self.headers.get("Content-Length", 0))
+            body = json.loads(self.rfile.read(length) or b"{}")
+        except Exception:
+            body = {}
+        mid = (body.get("id") or "").strip()
+        if not mid:
+            cur = read_current_meeting()
+            if cur:
+                mid = cur["id"]
+        if not mid:
+            self.send_json({"error": "no meeting id and none active"}, status=400)
+            return
+        model = (body.get("model") or "claude-haiku-4.5").strip()
+
+        rows = load_stt_rows(meeting_file(mid))
+        heard = [r for r in rows if not r.get("wake")]
+        if not heard:
+            self.send_json({"summary": "Nothing was transcribed for this meeting.",
+                            "model": model, "lines": 0, "id": mid})
+            return
+
+        def line(r):
+            t = (r.get("t", "") or "")[-8:]
+            return f"[{t}] {r.get('text','')}"
+        # Newest-first under a char budget, then flip chronological.
+        budget, picked = 90000, []
+        for r in reversed(heard):
+            s = line(r)
+            if budget - len(s) < 0:
+                break
+            picked.append(s)
+            budget -= len(s) + 1
+        transcript = "\n".join(reversed(picked))
+
+        system = (
+            "You summarize the transcript of a live video meeting. The transcript "
+            "is mic-derived speech-to-text and MAY contain mishearings, homophones, "
+            "and dropped words — read past them. Produce a concise recap grounded "
+            "ONLY in what the transcript says; never invent facts or use outside "
+            "knowledge. Format as short markdown sections: **Overview** (1-2 "
+            "sentences), **Key points** (bullets), **Decisions** (bullets, or "
+            "'none'), **Action items** (bullets with who if stated, or 'none'). If "
+            "the transcript is too thin to summarize, say so plainly."
+        )
+        user_msg = f"Meeting transcript (most recent at the bottom):\n{transcript}\n\nWrite the recap."
+        try:
+            req_body = json.dumps({
+                "model": model,
+                "max_tokens": 900,
+                "messages": [
+                    {"role": "system", "content": system},
+                    {"role": "user", "content": user_msg},
+                ],
+            }).encode()
+            req = urllib.request.Request(
+                "https://llm.bankr.bot/v1/chat/completions",
+                data=req_body,
+                headers={"Content-Type": "application/json", "X-API-Key": bankr_key},
+                method="POST",
+            )
+            with urllib.request.urlopen(req, timeout=45) as resp:
+                data = json.loads(resp.read())
+            raw = data["choices"][0]["message"]["content"]
+            import re
+            summary = re.sub(r"<think>.*?</think>", "", raw, flags=re.DOTALL).strip()
+            self.send_json({"summary": summary, "model": model,
+                            "lines": len(picked), "id": mid})
         except Exception as e:
             self.send_json({"error": str(e)}, status=500)
 
@@ -979,6 +1431,31 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Access-Control-Allow-Headers", "Content-Type")
         self.end_headers()
 
+    def rewrite_ws_host(self, ws_url):
+        """Make the gateway wsUrl reachable from a remote LAN browser.
+
+        The configured URL (OPENCLAW_WS_URL) points at 127.0.0.1 — the
+        backchannel proxy on THIS box. A browser on another machine resolves
+        127.0.0.1 to its own loopback and the connect fails, so swap the
+        loopback host for whatever hostname the browser used to reach us
+        (the Host header). The proxy binds 0.0.0.0 and its ?k= auth token
+        rides along in the query string, so the same port+token work from
+        the LAN. Loopback visitors are untouched (their Host is loopback
+        too), and a non-loopback wsUrl is passed through as-is.
+        """
+        try:
+            parts = urllib.parse.urlsplit(ws_url)
+            if parts.hostname not in ("127.0.0.1", "localhost"):
+                return ws_url
+            req_host = (self.headers.get("Host") or "").rsplit(":", 1)[0]
+            if not req_host or req_host in ("127.0.0.1", "localhost"):
+                return ws_url
+            netloc = req_host + (f":{parts.port}" if parts.port else "")
+            return urllib.parse.urlunsplit(
+                (parts.scheme, netloc, parts.path, parts.query, parts.fragment))
+        except Exception:
+            return ws_url
+
     def serve_file(self, name, content_type):
         path = Path(__file__).parent / name
         if not path.exists():
@@ -986,6 +1463,13 @@ class Handler(BaseHTTPRequestHandler):
             return
         body = path.read_bytes()
         self.send_response(200)
+        if getattr(self, "_set_auth_cookie", False):
+            # LAN visitor arrived with a valid ?k= — hand them a cookie so the
+            # page's same-origin fetches/EventSource authenticate without
+            # threading ?k= through every call site.
+            secure = "; Secure" if getattr(self.server, "is_tls", False) else ""
+            self.send_header("Set-Cookie",
+                             f"clawd_k={PAGE_TOKEN}; Path=/; SameSite=Lax; HttpOnly{secure}")
         self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", "no-store")
@@ -1032,6 +1516,35 @@ if __name__ == "__main__":
     print(f"   session          → {settings['sessionKey']}")
     print(f"   token            → {'set' if settings['token'] else 'MISSING — check ~/.openclaw/openclaw.json'}")
     print(f"   tts backend      → {settings['ttsBackend']}")
+    if PAGE_TOKEN:
+        try:
+            _s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            _s.connect(("8.8.8.8", 80))
+            _lan_ip = _s.getsockname()[0]
+            _s.close()
+            print(f"   LAN              → http://{_lan_ip}:{PORT}/?k={PAGE_TOKEN}")
+        except Exception:
+            pass
+    else:
+        print("[warn] no page token (CLAWD_PAGE_TOKEN / OPENCLAW_WS_URL ?k=) — LAN visitors are refused; loopback only")
+    # HTTPS twin: same Handler, TLS socket — gives LAN visitors a real secure
+    # origin (mic/SR/setSinkId work with no chrome flags). Runs alongside the
+    # http listener; the on-box rig keeps using plain http on loopback.
+    if os.path.exists(TLS_CERT) and os.path.exists(TLS_KEY):
+        try:
+            _ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+            _ctx.load_cert_chain(TLS_CERT, TLS_KEY)
+            _tls_httpd = ThreadedHTTPServer(("0.0.0.0", TLS_PORT), Handler)
+            _tls_httpd.socket = _ctx.wrap_socket(_tls_httpd.socket, server_side=True)
+            _tls_httpd.is_tls = True
+            threading.Thread(target=_tls_httpd.serve_forever, daemon=True).start()
+            _host = socket.gethostname()  # e.g. atgsilver-4.local
+            _kq = f"/?k={PAGE_TOKEN}" if PAGE_TOKEN else "/"
+            print(f"   HTTPS            → https://{_host}:{TLS_PORT}{_kq}  ← LAN, no chrome flags (trust the mkcert root CA once)")
+        except Exception as _e:
+            print(f"[warn] HTTPS listener failed: {_e}")
+    else:
+        print(f"   [info] no TLS cert at {TLS_CERT} — HTTPS listener off (mkcert can mint one; see certs/)")
     if not settings["token"]:
         print("[warn] no gateway token found — the UI will prompt you to paste one")
     print("   tip: ?dev=1 in the URL drops OBS mode and shows the full chat UI.")

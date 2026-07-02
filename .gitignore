@@ -12,3 +12,6 @@ __pycache__/
 # backchannel runtime (folded in from clawd-backchannel; user data, not code)
 backchannel/shortcuts.json
 backchannel/shortcuts.json.tmp
+
+# local TLS certs (mkcert-minted; private key — never commit)
+certs/

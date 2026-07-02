@@ -541,6 +541,32 @@
   }
   #audio-meters .routing .ok { color: var(--ok); }
   #audio-meters .routing .warn { color: var(--warn); }
+  /* Device pickers — OUT/IN dropdowns under the routing readout. "auto" =
+     today's behavior (OUT → BH-2ch if present, IN → system default); a manual
+     pick pins the device and persists in localStorage, so the same page works
+     on a machine with ordinary mics/speakers. The container is
+     pointer-events:none (it overlays the stage), so the selects re-enable it. */
+  #audio-meters .devpick {
+    margin-top: 6px; padding-top: 6px;
+    border-top: 1px solid rgba(255,255,255,0.06);
+  }
+  #audio-meters .devpick .row {
+    display: flex; align-items: center; gap: 6px;
+    margin: 2px 0;
+  }
+  #audio-meters .devpick .lbl {
+    width: 34px; flex-shrink: 0;
+    color: var(--fg3); letter-spacing: 0.04em; font-size: 9px;
+  }
+  #audio-meters .devpick select {
+    pointer-events: auto;
+    flex: 1; min-width: 0;
+    background: rgba(255,255,255,0.06); color: var(--fg2);
+    border: 1px solid rgba(255,255,255,0.12); border-radius: 4px;
+    font-family: var(--font-mono); font-size: 9px;
+    padding: 1px 2px;
+  }
+  #audio-meters .devpick select:focus { outline: 1px solid var(--ok); }
 
   /* ── Full-access lock (bottom-center) ────────────────────────────────────
      Tap to flip clawd between GUARDED (🔒 — voice is blast-radius locked, the
@@ -569,6 +595,40 @@
     border-color: var(--accent2);
     box-shadow: 0 0 16px rgba(229,90,43,0.6);
   }
+
+  /* Phone-call mode badge — same pill shape as the lock, sits just above it.
+     Hidden unless active (.on); green when lit. */
+  #phone-badge {
+    display: none;
+    position: fixed; bottom: 52px; left: 50%; transform: translateX(-50%);
+    z-index: 10001; pointer-events: auto; cursor: pointer; user-select: none;
+    font-family: var(--font-mono); font-size: 12px; letter-spacing: 0.04em;
+    padding: 7px 15px; border-radius: 999px; white-space: nowrap;
+    background: rgba(52,238,182,0.9); color: #04211a;
+    border: 1px solid rgba(52,238,182,0.5);
+    box-shadow: 0 0 16px rgba(52,238,182,0.45);
+  }
+  #phone-badge.on { display: inline-block; }
+  body.obs.hide-status #phone-badge { display: none; }
+
+  /* Multi-mic scanner overlay (Shift+M) */
+  #micscan {
+    position: fixed; left: 16px; bottom: 16px; z-index: 10002;
+    width: min(420px, 46vw);
+    background: rgba(6,10,14,0.92); color: var(--fg);
+    border: 1px solid rgba(255,255,255,0.14); border-radius: 12px;
+    padding: 12px 14px; font-family: var(--font-mono); font-size: 12px;
+    box-shadow: 0 8px 30px rgba(0,0,0,0.5); backdrop-filter: blur(6px);
+  }
+  #micscan[hidden] { display: none; }
+  #micscan .micscan-head { color: var(--fg3); margin-bottom: 10px; letter-spacing: 0.02em; }
+  #micscan .mrow { display: grid; grid-template-columns: 150px 1fr 34px; align-items: center; gap: 8px; margin: 5px 0; }
+  #micscan .mrow .mlabel { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  #micscan .mrow.picked .mlabel { color: #34eeb6; font-weight: 700; }
+  #micscan .mrow.err .mlabel { color: rgba(229,90,43,0.9); }
+  #micscan .mbar { height: 10px; border-radius: 6px; background: rgba(255,255,255,0.08); overflow: hidden; }
+  #micscan .mbar > i { display: block; height: 100%; width: 0%; background: linear-gradient(90deg,#34eeb6,#e5a52b); transition: width 0.05s linear; }
+  #micscan .mval { text-align: right; color: var(--fg3); }
 
   /* ── In-page tone test panel (bottom-right) ──────────────────────────────
      Three buttons that play test tones via different routing paths so we
@@ -785,12 +845,40 @@
     <div class="bar"><div class="bar-fill"></div></div>
   </div>
   <div class="routing">routing: …</div>
+  <!-- Device pickers — "auto" = current rig behavior (OUT → BlackHole 2ch if
+       present, IN → system default). A manual pick pins the device + persists,
+       so this page works on machines with normal mics/speakers. NOTE: speech
+       recognition always follows the OS default input (Chrome gives no API to
+       redirect it) — the IN pick moves the meters/energy stream only. -->
+  <div class="devpick">
+    <div class="row">
+      <span class="lbl">OUT</span>
+      <select id="pick-out" title="TTS output device. auto = BlackHole 2ch if present, else system default."></select>
+    </div>
+    <div class="row">
+      <span class="lbl">IN</span>
+      <select id="pick-in" title="Mic for the level meters / barge energy. Speech recognition itself follows the OS default input — change that in Sound settings."></select>
+    </div>
+  </div>
 </div>
 
 <!-- Full-access lock — bottom-center. Tap to toggle guarded ↔ full access.
      Defaults guarded on every fresh load (see state.fullAccess). Shift+L also
      toggles it. -->
 <div id="access-lock" role="button" tabindex="0" title="Tap to toggle: guarded ↔ full access (Shift+L)">🔒 guarded</div>
+
+<!-- Phone-call mode badge — bottom-center, just above the lock. Lit (green) only
+     while Shift+P continuous-conversation mode is active; invisible otherwise so
+     a clean stream isn't cluttered. -->
+<div id="phone-badge" role="button" tabindex="0" title="Tap to toggle phone-call mode (Shift+P)">📞 phone call</div>
+
+<!-- Multi-mic scanner (Shift+M) — a live level bar for EVERY input device, so
+     you can SEE which mic actually moves when you talk (vs which carries clawd's
+     echo). Hidden by default. -->
+<div id="micscan" hidden>
+  <div class="micscan-head">🎚 input mics — talk and watch which one moves · Shift+M to close</div>
+  <div id="micscan-rows"></div>
+</div>
 
 <!-- Tone test panel — uses clawd's own audio context (with setSinkId
      already routed to BH-2ch) so we can verify what actually leaks where. -->
@@ -2998,7 +3086,9 @@ async function onSend(opts = {}) {
   if (empty) empty.remove();
 
   // New turn: clear any in-flight TTS / filler state from the prior turn.
-  ttsReset();
+  // keepTts (phone mode) skips this: submitPhoneTurn already reset + queued an
+  // instant opener that must keep playing while the brain spins up.
+  if (!opts.keepTts) ttsReset();
   // Estimate input tokens from the message about to be sent. This is what
   // the WS frame carries (transcript context + user question). If we later
   // see real `usage` data we'll switch the chip into exact mode.
@@ -3010,7 +3100,9 @@ async function onSend(opts = {}) {
   // request's DIFFICULTY and tiers the stall: SIMPLE → a bare sound ("hmm"),
   // MEDIUM → "let me think about that", HARD → "that's a big one, this'll take
   // work". Never the actual answer.
-  if (_ttsEnabled && !shouldSkipAck(text)) {
+  // keepTts (phone mode) means submitPhoneTurn already fired the instant opener —
+  // don't stack a second ack on top of it.
+  if (_ttsEnabled && !opts.keepTts && !shouldSkipAck(text)) {
     openAckWindow();
     fillerSpeak({
       kind: "ack",
@@ -3764,6 +3856,54 @@ let _lastSpokeTs = 0;         // Date.now() of last TTS audio activity (echo gat
 let _wakeManuallyPaused = false;  // user clicked the mic to take over
 let _pttActive = false;       // push-to-talk button held (backchannel ptt-down…ptt-up): capture without a wake word, never auto-submit on silence
 
+// ── Phone-call mode (Shift+P) ──────────────────────────────────────────────
+// Continuous conversation: NO wake word. SR listens the whole time; each
+// end-of-turn (SILENCE_MS gap) is run past a cheap Haiku gate
+// (/api/should-respond) that decides whether clawd should reply at all — so he
+// doesn't jump on thinking-aloud / side-chatter. Approved turns escalate to the
+// full brain. Barge-in: a real (non-echo) utterance over clawd's TTS cuts him
+// off. sessionStorage-backed like the access lock (survives a live-reload, not a
+// tab restart) so it's always a deliberate act.
+let _phoneMode = (() => { try { return sessionStorage.getItem("clawd.phoneMode") === "1"; } catch (e) { return false; } })();
+let _phoneGating = false;          // a should-respond gate call is in flight
+const PHONE_MIN_TOKENS = 2;        // min words for a phone utterance to count as a turn (drops stray 1-word noise)
+const PHONE_BARGE_MIN_TOKENS = 4;  // content-barge backstop: ≥4 tokens so isLikelyEcho() actually vets it (it ignores <4-token chunks), or clawd would interrupt himself on his own short echoes
+const PHONE_SILENCE_MS = 750;      // gap after the user stops before clawd takes a turn (500 felt too eager; the gate still vetoes mid-thought)
+// Energy-based barge-in (the fast path). While clawd speaks, the mic carries his
+// TTS echo; we track a slow baseline of that echo and treat a SUSTAINED jump
+// above it as the user's voice added on top → cut clawd off. Content-free, so it
+// reacts in ~130ms instead of waiting for Web Speech to finalize (seconds late).
+// Tune live via window.__bargeDebug = true (logs mic/baseline/over each ~20 frames).
+const PHONE_BARGE_MARGIN = 14;     // mic RMS-% above the echo baseline that counts as the user talking over clawd
+const PHONE_BARGE_MIN_MIC = 9;     // absolute mic floor — ignore near-silence
+const PHONE_BARGE_FRAMES = 8;      // ~130ms sustained (at ~60fps) before we call it a barge-in
+// Second barge path (more reliable than energy): Speech Recognition transcribes
+// clawd's echo while he talks, but the USER's words won't match what clawd is
+// currently saying. If the live interim gains this many NOVEL (non-clawd) tokens
+// during his speech, the user is talking over him → barge. Works wherever SR
+// hears the user, independent of mic-meter levels. Live-tunable via
+// window.__srBargeTokens (lower = more eager to stop; raise if he stops himself).
+const PHONE_SR_BARGE_TOKENS = 2;
+
+// ── Dedicated barge mic ────────────────────────────────────────────────────
+// The page's SR + level meter listen to the SYSTEM DEFAULT input, which on this
+// rig is BlackHole — the virtual device that also carries clawd's OWN TTS. That's
+// the "he hears himself" echo, and it's why the user's real voice reads faint.
+// For barge detection we open a SECOND mic stream pinned to the REAL microphone
+// (a non-BlackHole input), with Chrome's echo cancellation on. On headphones that
+// mic never hears clawd at all, so plain sustained energy = the user talking over
+// him → barge. No echo to out-smart.
+const BARGE_MIC_MIN = 6;      // clean-mic RMS-% floor that counts as the user speaking (tune via window.__bargeMicMin)
+const BARGE_MIC_FRAMES = 7;   // ~115ms sustained before we call it a barge-in
+let _bargeMicLevel = 0;       // live 0..100 RMS of the dedicated barge mic
+let _bargeMicLabel = "(none)";
+let _bargeMicClean = false;   // did we find a real (non-BlackHole) mic? only then do we auto-barge
+let _bargeEnergyFrames = 0;
+let _echoBaseline = 0;             // slow-following baseline of clawd's own echo level while he speaks
+let _bargeFrames = 0;              // consecutive frames the mic has been over the baseline
+let _bargeWarm = 0;                // frames elapsed in the current TTS chunk (baseline warmup)
+let _bargeDbgTick = 0;             // throttle for the __bargeDebug log
+
 // ── Self-echo cancellation (content-based) ─────────────────────────────────
 // The call's audio rig loops clawd's own TTS back into the mic (TTS → BlackHole
 // 2ch = the recognizer's input), and Web Speech finalizes those words SECONDS
@@ -3813,6 +3953,22 @@ function logStt(payload) {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(payload),
+      keepalive: true,
+    }).catch(() => {});
+  } catch (e) {}
+}
+
+// Fan a debug line to the backchannel (via /api/debug → SSE). Fire-and-forget:
+// lets the user watch barge/gate/mic/phone events on their phone while on a call.
+// (Heard STT is auto-piped server-side from /api/stt-log; this is for everything
+// else worth surfacing.) Also mirrors to the console.
+function bcLog(kind, msg) {
+  try {
+    console.log(`%c[bc:${kind}]`, "color:#8aa", msg);
+    fetch("/api/debug", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ kind, msg: String(msg) }),
       keepalive: true,
     }).catch(() => {});
   } catch (e) {}
@@ -3929,7 +4085,7 @@ function startWakeRecog() {
     if (_ttsAudio) return;
     const tab = (typeof currentTab === "function") ? currentTab() : null;
     if (tab && tab.activeRunId) return;
-    setPillState("listening", 'listening for "okay/so claude"');
+    setPillState("listening", _phoneMode ? "on call — listening…" : 'listening for "okay/so claude"');
   };
   r.onaudiostart  = () => console.log("%c[SR] audiostart  — capture began", "color:#6cf");
   r.onsoundstart  = () => console.log("%c[SR] soundstart  — any sound detected", "color:#6cf");
@@ -3952,9 +4108,14 @@ function startWakeRecog() {
 
   r.onresult = (e) => {
     pingSpeechMeter();
+    const echo = inEchoWindow();
     // While push-to-talk is held we WANT to capture even right after TTS (the
     // press ducks clawd's own speech), so bypass the echo gate for PTT only.
-    if (inEchoWindow() && !_pttActive) return;
+    // PHONE mode also keeps processing finalized chunks through the echo window
+    // so a genuine (non-echo) interjection can BARGE IN over clawd — isLikelyEcho()
+    // inside handleFinalChunk drops his own looped-back voice. Legacy (wake-word)
+    // mode keeps the old hard skip.
+    if (echo && !_pttActive && !_phoneMode) return;
     let interim = "";
     for (let i = e.resultIndex; i < e.results.length; i++) {
       const res = e.results[i];
@@ -3962,6 +4123,28 @@ function startWakeRecog() {
       else interim += res[0].transcript;
     }
     _liveInterim = interim.trim();
+    // While clawd is speaking in phone mode he hears himself (TTS loops into SR),
+    // so most interim is his own echo. Detect the USER talking over him by NOVEL
+    // tokens — words that AREN'T part of what clawd is currently saying. Enough
+    // novel tokens = a real barge-in → cut him off. His echo scores 0 novel, so
+    // this never self-triggers.
+    if (echo && !_pttActive && _phoneMode) {
+      // SR-content barge is OFF by default: SR mistranscribes clawd's own echo
+      // into "novel" words, so it self-barges (he stops after ~3 words). Kept
+      // behind window.__srBarge for debugging only. The real fix is echo
+      // cancellation (see phoneBargeIn notes) — until then, Shift+S is the
+      // reliable manual stop.
+      if (_ttsAudio && window.__srBarge) {
+        const need = window.__srBargeTokens || PHONE_SR_BARGE_TOKENS;  // live-tunable in console
+        const novel = phoneNovelTokenCount(_liveInterim);
+        if (window.__bargeDebug && _liveInterim) {
+          console.log(`%c[barge/sr] novel=${novel}/${need} interim="${_liveInterim.slice(-70)}"`, "color:#e5a52b");
+        }
+        if (novel >= need) { phoneBargeIn(); return; }
+      }
+      renderTranscriptOverlay();
+      return;
+    }
     // Wake detection over a COMBINED recent window (recent finalized chunks +
     // the live interim). This is the fix for the real miss cause: SR often
     // splits "so" / "okay" and "claude" into separate chunks, so per-chunk
@@ -3971,7 +4154,16 @@ function startWakeRecog() {
       const floor = Math.max(_lastSubmitTs, now - WAKE_WINDOW_MS);
       const recent = _transcript.filter(e => e.ts > floor).map(e => e.text).join(" ");
       const windowText = (recent + " " + _liveInterim).replace(/\s+/g, " ").trim();
-      if (windowText && WAKE_RE.test(windowText)) {
+      if (_phoneMode) {
+        // Phone mode: no wake word — arm as soon as we hear real speech.
+        if (_echoTokens(windowText).length >= PHONE_MIN_TOKENS) {
+          _wakeArmed = true;
+          _wakeBuf = recent;
+          setPillState("armed", "listening…");
+          clawdVid.listening();
+          armSilenceTimer();
+        }
+      } else if (windowText && WAKE_RE.test(windowText)) {
         _wakeArmed = true;
         // The command can PRECEDE the wake word ("…what's the weather, so claude"),
         // so seed the buffer with the finals captured so far; more append below.
@@ -4036,7 +4228,14 @@ function armSilenceTimer() {
   // silence must never auto-submit while the button is held.
   if (_pttActive) return;
   clearTimeout(_silenceTimer);
-  _silenceTimer = setTimeout(submitWakeBuffer, SILENCE_MS);
+  _silenceTimer = setTimeout(onSilenceElapsed, _phoneMode ? PHONE_SILENCE_MS : SILENCE_MS);
+}
+
+// End-of-turn: in phone mode the assembled utterance goes through the Haiku gate
+// (submitPhoneTurn); otherwise it's a wake-word turn submitted straight to the
+// brain. Decided at FIRE time so a mid-turn mode flip routes correctly.
+function onSilenceElapsed() {
+  return _phoneMode ? submitPhoneTurn() : submitWakeBuffer();
 }
 
 function submitWakeBuffer() {
@@ -4077,6 +4276,278 @@ function submitWakeBuffer() {
   logStt({ wake: true, sent: composed });
   setPillState("thinking", "thinking…");
   onSend({ interrupt: true });   // voice turn: interrupt any in-flight answer, don't drop this question
+}
+
+// ── Phone-call turn: end-of-turn → Haiku gate → maybe respond ──────────────
+// Phone mode's submit path. The utterance is assembled (no wake phrase to strip),
+// then a cheap server-side Haiku call decides whether clawd should respond at
+// all. Only an approved turn escalates to the full brain via onSend(); a "no"
+// just drops the utterance and keeps listening — that's what stops clawd from
+// jumping on every pause / bit of thinking-aloud.
+async function submitPhoneTurn() {
+  const raw = (_wakeBuf || "").replace(/\s+/g, " ").trim();
+  _wakeArmed = false;
+  _wakeBuf = "";
+  clearTimeout(_silenceTimer);
+  if (_echoTokens(raw).length < PHONE_MIN_TOKENS) {
+    if (!_ttsAudio) setPillState("listening", "on call — listening…");
+    return;
+  }
+  if (_phoneGating) return;   // a gate is already deciding; the next turn re-arms
+  _lastSubmitTs = Date.now();
+  const VOICE_WORD_CAP = 64;
+  const _words = raw.split(/\s+/);
+  const utterance = _words.length > VOICE_WORD_CAP ? _words.slice(-VOICE_WORD_CAP).join(" ") : raw;
+
+  // Latency play: fire an INSTANT opener now (a thinking sound, no LLM hop) so
+  // clawd makes a human sound ~200ms after you stop, and run the gate in
+  // PARALLEL underneath it. If the gate says respond → the brain kicks off the
+  // moment it returns, its real speech queued right behind the opener. If it
+  // vetoes (you were thinking aloud / talking to someone else) → cut the opener.
+  ttsReset();                 // clear any residue from the previous turn
+  phoneOpener();              // instant "hmm" — masks the gate + brain spin-up
+  setPillState("thinking", "…");
+
+  _phoneGating = true;
+  let respond = true;
+  try { respond = await shouldRespond(utterance); }
+  catch (e) { respond = true; }   // gate hiccup → don't go silent
+  _phoneGating = false;
+
+  // The user started a new turn while we were deciding — drop this stale verdict.
+  if (_wakeArmed) return;
+  if (!respond) {
+    console.log("%c[phone] gate: stay quiet", "color:#888", utterance);
+    bcLog("gate", `🤫 stay quiet — "${utterance}"`);
+    try { ttsReset(); } catch (e) {}   // cut the opener
+    if (!_ttsAudio) setPillState("listening", "on call — listening…");
+    return;
+  }
+  bcLog("gate", `💬 respond — "${utterance}"`);
+  // Approved → escalate to the brain. keepTts:true so onSend doesn't wipe the
+  // opener that's already bridging the gap, and doesn't fire a second ack.
+  logStt({ wake: true, sent: utterance });
+  $input.value = utterance;
+  autosize($input);
+  setPillState("thinking", "thinking…");
+  onSend({ interrupt: true, keepTts: true });
+}
+
+// Instant, LLM-free opener for phone mode: TTS a short thinking sound straight
+// away (skips /api/filler's ~0.7s Haiku hop). Queued as an "ack" so the brain's
+// real speech serializes right behind it in the TTS queue.
+function phoneOpener() {
+  if (!_ttsEnabled || _ttsMode === "browser") return;
+  _liveInterim = "";   // fresh slate so the barge detector doesn't count pre-turn words as novel
+  try { ttsEnqueue(pickBrainSound(), "ack"); } catch (e) {}
+}
+
+// Count NOVEL tokens in `text` — words that AREN'T part of what clawd has
+// recently spoken. Clawd hears his own TTS (it loops into SR), so his echoed
+// words are all in `_spokenEcho` and score 0; only the user's words are novel.
+// We look at the tail so a long echo interim doesn't dilute a fresh barge.
+function phoneNovelTokenCount(text) {
+  const toks = _echoTokens(text);
+  if (!toks.length) return 0;
+  const tail = toks.slice(-8);
+  const cutoff = Date.now() - ECHO_BUF_MS;
+  const spoken = new Set();
+  for (const e of _spokenEcho) if (e.ts >= cutoff) for (const t of e.tokens) spoken.add(t);
+  let novel = 0;
+  for (const t of tail) if (!spoken.has(t)) novel++;
+  return novel;
+}
+
+// Barge-in: called the instant we're confident the USER is talking over clawd.
+// Cut his audio + abort his run, clear the echo tail so we capture cleanly, and
+// start this turn.
+function phoneBargeIn() {
+  if (!_ttsAudio) return;
+  console.log("%c[phone] BARGE-IN — user talking over clawd", "color:#e55a2b;font-weight:bold");
+  bcLog("barge", "✋ cut clawd off — you started talking");
+  try { ttsReset(); } catch (e) {}
+  const tab = (typeof currentTab === "function") ? currentTab() : null;
+  if (tab && tab.activeRunId) {
+    try { rpc("chat.abort", { sessionKey: tab.sessionKey, runId: tab.activeRunId }); } catch (e) {}
+    tab.activeRunId = null;
+  }
+  _lastSpokeTs = 0;            // drop the echo tail so onresult stops skipping and captures the barge words
+  _echoBaseline = 0;
+  _bargeFrames = 0;
+  _wakeArmed = true;           // capture this turn (words finalize into _wakeBuf via handleFinalChunk)
+  _wakeBuf = "";
+  _liveInterim = "";
+  _lastSubmitTs = Date.now();
+  setPillState("armed", "listening…");
+  try { clawdVid.listening(); } catch (e) {}
+  armSilenceTimer();
+}
+
+// Open a SECOND mic stream dedicated to barge detection — pinned to the real
+// microphone (not BlackHole), echo-cancelled. Its energy, sampled while clawd
+// speaks, is the barge signal. Runs its own rAF loop. Called once, after the
+// audio-unlock gesture. Auto-barge only arms if we actually found a clean
+// (non-BlackHole) mic; otherwise it just logs so we don't self-interrupt.
+async function setupBargeMic() {
+  try {
+    const probe = await navigator.mediaDevices.getUserMedia({ audio: true });
+    probe.getTracks().forEach(t => t.stop());
+    const devs = await navigator.mediaDevices.enumerateDevices();
+    const inputs = devs.filter(d => d.kind === "audioinput" && d.deviceId);
+    console.log("%c[barge] input devices:", "color:#e5a52b",
+      inputs.map(d => d.label || d.deviceId.slice(0, 8)));
+    const VIRTUAL_RE = /blackhole|aggregate|virtual|soundflower|loopback|multi-output/i;
+    const want = (window.__bargeMic || "").toLowerCase();   // label-substring override
+    let pick = null;
+    if (want) pick = inputs.find(d => (d.label || "").toLowerCase().includes(want));
+    if (!pick) pick = inputs.find(d => !VIRTUAL_RE.test(d.label || ""));   // prefer a real mic
+    if (!pick) pick = inputs[0];
+    _bargeMicClean = !!(want || (pick && !VIRTUAL_RE.test(pick.label || "")));
+    const audioConstraints = {
+      echoCancellation: true, noiseSuppression: true, autoGainControl: true,
+    };
+    if (pick && pick.deviceId) audioConstraints.deviceId = { exact: pick.deviceId };
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: audioConstraints });
+    const track = stream.getAudioTracks()[0];
+    _bargeMicLabel = (track && track.label) || (pick && pick.label) || "(default)";
+    console.log("%c[barge] using mic: " + _bargeMicLabel +
+      (_bargeMicClean ? "  (clean → auto-barge ON)" : "  (looks virtual → auto-barge OFF; set window.__bargeMic='<label>')"),
+      "color:#34eeb6;font-weight:bold");
+    bcLog("mic", `🎙 barge mic: ${_bargeMicLabel} ${_bargeMicClean ? "(auto-barge ON)" : "(virtual → OFF)"}`);
+    bcLog("mic", `inputs: ${inputs.map(d => d.label || "?").join(", ")}`);
+    const ctx = new (window.AudioContext || window.webkitAudioContext)();
+    if (ctx.state === "suspended") await ctx.resume();
+    const src = ctx.createMediaStreamSource(stream);
+    const an = ctx.createAnalyser();
+    an.fftSize = 1024;
+    an.smoothingTimeConstant = 0.4;
+    src.connect(an);
+    const buf = new Uint8Array(an.fftSize);
+    let dbg = 0;
+    function loop() {
+      an.getByteTimeDomainData(buf);
+      let sum = 0;
+      for (let i = 0; i < buf.length; i++) { const v = (buf[i] - 128) / 128; sum += v * v; }
+      _bargeMicLevel = Math.min(100, Math.sqrt(sum / buf.length) * 240);
+      const floor = window.__bargeMicMin || BARGE_MIC_MIN;
+      // While clawd speaks in phone mode, sustained energy on THIS (clean) mic
+      // means the user is talking over him → barge. Only when we have a clean mic
+      // (or an explicit override), so a virtual pick can't self-interrupt.
+      const armed = _bargeMicClean || !!window.__bargeMic;
+      if (armed && _phoneMode && _ttsAudio && _bargeMicLevel > floor) {
+        if (++_bargeEnergyFrames >= BARGE_MIC_FRAMES) { _bargeEnergyFrames = 0; phoneBargeIn(); }
+      } else if (_bargeEnergyFrames > 0) {
+        _bargeEnergyFrames--;
+      }
+      if (window.__bargeDebug && (++dbg % 12 === 0)) {
+        console.log(`[barge/mic] ${_bargeMicLabel} lvl=${_bargeMicLevel.toFixed(0)} floor=${floor} frames=${_bargeEnergyFrames} tts=${!!_ttsAudio}`);
+      }
+      requestAnimationFrame(loop);
+    }
+    loop();
+  } catch (e) {
+    console.warn("[barge] setupBargeMic failed:", e.name, e.message);
+  }
+}
+
+// ── Multi-mic scanner (Shift+M) ────────────────────────────────────────────
+// Opens a live level meter for EVERY input device at once, so you can SEE which
+// mic actually moves when you talk vs which just carries clawd's echo. This is
+// how we settle "which device should the barge mic use" by looking, not guessing.
+let _micScanCtx = null;
+let _micScanRows = [];
+let _micScanStarted = false;
+let _micScanLastSummary = "";
+
+async function startMicScan() {
+  if (_micScanStarted) return;
+  _micScanStarted = true;
+  const host = document.getElementById("micscan-rows");
+  if (!host) return;
+  try { (await navigator.mediaDevices.getUserMedia({ audio: true })).getTracks().forEach(t => t.stop()); } catch (e) {}
+  let devs = [];
+  try { devs = (await navigator.mediaDevices.enumerateDevices()).filter(d => d.kind === "audioinput" && d.deviceId); } catch (e) {}
+  _micScanCtx = new (window.AudioContext || window.webkitAudioContext)();
+  if (_micScanCtx.state === "suspended") { try { await _micScanCtx.resume(); } catch (e) {} }
+  for (const d of devs) {
+    const label = d.label || d.deviceId.slice(0, 8);
+    const row = document.createElement("div");
+    row.className = "mrow";
+    if (_bargeMicLabel && label && (_bargeMicLabel.includes(label) || label.includes(_bargeMicLabel))) row.classList.add("picked");
+    row.innerHTML = `<span class="mlabel"></span><span class="mbar"><i></i></span><span class="mval">–</span>`;
+    row.querySelector(".mlabel").textContent = label;
+    host.appendChild(row);
+    const entry = { label, bar: row.querySelector(".mbar > i"), val: row.querySelector(".mval"), an: null, buf: null };
+    _micScanRows.push(entry);
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({
+        audio: { deviceId: { exact: d.deviceId }, echoCancellation: false, noiseSuppression: false, autoGainControl: false },
+      });
+      const src = _micScanCtx.createMediaStreamSource(stream);
+      const an = _micScanCtx.createAnalyser();
+      an.fftSize = 512;
+      an.smoothingTimeConstant = 0.3;
+      src.connect(an);
+      entry.an = an;
+      entry.buf = new Uint8Array(an.fftSize);
+    } catch (e) {
+      row.classList.add("err");
+      entry.val.textContent = "×";
+    }
+  }
+  function loop() {
+    const summary = [];
+    for (const e of _micScanRows) {
+      if (!e.an) continue;
+      e.an.getByteTimeDomainData(e.buf);
+      let sum = 0;
+      for (let i = 0; i < e.buf.length; i++) { const v = (e.buf[i] - 128) / 128; sum += v * v; }
+      const lvl = Math.min(100, Math.sqrt(sum / e.buf.length) * 240);
+      e.bar.style.width = lvl.toFixed(0) + "%";
+      e.val.textContent = lvl.toFixed(0);
+      summary.push(`${e.label.slice(0, 14)}=${lvl.toFixed(0)}`);
+    }
+    _micScanLastSummary = summary.join("  ");
+    requestAnimationFrame(loop);
+  }
+  loop();
+  // Snapshot the levels to the backchannel every ~1.5s while the panel is open,
+  // so the same picture reaches the phone.
+  setInterval(() => {
+    const el = document.getElementById("micscan");
+    if (el && !el.hasAttribute("hidden") && _micScanLastSummary) bcLog("levels", _micScanLastSummary);
+  }, 1500);
+}
+
+function toggleMicScan() {
+  const el = document.getElementById("micscan");
+  if (!el) return;
+  if (el.hasAttribute("hidden")) {
+    el.removeAttribute("hidden");
+    bcLog("micscan", "opened mic scanner — watching input levels");
+    startMicScan();
+  } else {
+    el.setAttribute("hidden", "");
+  }
+}
+window.addEventListener("keydown", (e) => {
+  if (e.key !== "M" || !e.shiftKey || e.metaKey || e.ctrlKey) return;
+  if (e.target && /^(INPUT|TEXTAREA)$/.test(e.target.tagName)) return;
+  toggleMicScan();
+});
+
+// Ask the cheap server-side gate whether clawd should respond to this utterance.
+// Returns true on any error so a flaky gate never silences clawd.
+async function shouldRespond(utterance) {
+  const tab = (typeof currentTab === "function") ? currentTab() : null;
+  const res = await fetch("/api/should-respond", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ utterance, history: fillerHistorySnapshot(tab, 4) }),
+  });
+  if (!res.ok) return true;
+  const j = await res.json().catch(() => ({}));
+  return j.respond !== false;
 }
 
 // ── Push-to-talk (driven from the backchannel) ─────────────────────────────
@@ -4138,9 +4609,31 @@ function handleFinalChunk(rawText) {
   // against the combined window; here we only grow the command once armed.
   pushTranscript(text);
   logStt({ text });   // full room transcript → server-side STT log
+  // PHONE-mode barge-in: a genuine (non-echo) utterance arrived while clawd is
+  // STILL speaking → cut his audio + abort his run, and start capturing this
+  // turn. (Normal phone arming, when clawd isn't speaking, happens in onresult's
+  // arming block.) Require a longer chunk so isLikelyEcho() — which ignores
+  // <4-token chunks — has actually vetted it, or clawd self-interrupts on echo.
+  if (window.__srBarge && _phoneMode && !_wakeArmed && (_ttsAudio || inEchoWindow())) {
+    if (_echoTokens(text).length >= PHONE_BARGE_MIN_TOKENS) {
+      try { ttsReset(); } catch (e) {}
+      const tab = (typeof currentTab === "function") ? currentTab() : null;
+      if (tab && tab.activeRunId) {
+        try { rpc("chat.abort", { sessionKey: tab.sessionKey, runId: tab.activeRunId }); } catch (e) {}
+        tab.activeRunId = null;
+      }
+      _wakeArmed = true;
+      _wakeBuf = text;
+      _lastSubmitTs = Date.now();   // ignore room chatter from before the barge-in
+      setPillState("armed", "listening…");
+      try { clawdVid.listening(); } catch (e) {}
+      armSilenceTimer();
+      return;
+    }
+  }
   if (_wakeArmed) {
     _wakeBuf = (_wakeBuf ? _wakeBuf + " " : "") + text;
-    setPillState("armed", "go on…");
+    setPillState("armed", _phoneMode ? "listening…" : "go on…");
     armSilenceTimer();
   }
 }
@@ -4166,7 +4659,7 @@ setInterval(() => {
   } else if (running) {
     setPillState("thinking", "thinking…");
   } else {
-    setPillState("listening", 'listening for "okay/so claude"');
+    setPillState("listening", _phoneMode ? "on call — listening…" : 'listening for "okay/so claude"');
   }
 }, 200);
 
@@ -4209,6 +4702,7 @@ function setFullAccess(on) {
   state.fullAccess = !!on;
   try { sessionStorage.setItem("clawd.fullAccess", on ? "1" : "0"); } catch (e) {}
   renderAccessLock();
+  bcLog("trusted", on ? "🔓 full access ON" : "🔒 guarded");
 }
 if ($accessLock) {
   $accessLock.addEventListener("click", () => setFullAccess(!state.fullAccess));
@@ -4223,6 +4717,53 @@ window.addEventListener("keydown", (e) => {
   if (e.target && /^(INPUT|TEXTAREA)$/.test(e.target.tagName)) return;
   setFullAccess(!state.fullAccess);
 });
+
+// ── Phone-call mode toggle (Shift+P) ───────────────────────────────────────
+// Flips continuous-conversation mode on/off (see _phoneMode up top). A green
+// "📞 phone call" badge lights when active. Shift+P or a tap on the badge flips
+// it; sessionStorage keeps it across a live-reload, not a tab restart.
+const $phoneBadge = document.getElementById("phone-badge");
+function renderPhoneBadge() {
+  if ($phoneBadge) $phoneBadge.classList.toggle("on", _phoneMode);
+}
+function setPhoneMode(on) {
+  _phoneMode = !!on;
+  try { sessionStorage.setItem("clawd.phoneMode", on ? "1" : "0"); } catch (e) {}
+  // Reset capture state on every flip so a half-armed turn never carries across.
+  _wakeArmed = false; _wakeBuf = ""; _liveInterim = ""; _phoneGating = false;
+  clearTimeout(_silenceTimer);
+  _lastSubmitTs = Date.now();   // ignore everything heard before the flip
+  renderPhoneBadge();
+  setPillState("listening", _phoneMode ? "on call — listening…" : 'listening for "okay/so claude"');
+  console.log("%c[phone] mode " + (_phoneMode ? "ON" : "off"), "color:#34eeb6;font-weight:bold");
+  bcLog("phone", _phoneMode ? "📞 phone mode ON" : "📴 phone mode off");
+}
+window.addEventListener("keydown", (e) => {
+  if (e.key !== "P" || !e.shiftKey || e.metaKey || e.ctrlKey) return;
+  if (e.target && /^(INPUT|TEXTAREA)$/.test(e.target.tagName)) return;
+  setPhoneMode(!_phoneMode);
+});
+// Shift+S = "shush": instantly stop clawd talking + abort his run. A guaranteed
+// manual barge-in (the auto energy/SR detection is best-effort on a noisy rig).
+window.addEventListener("keydown", (e) => {
+  if (e.key !== "S" || !e.shiftKey || e.metaKey || e.ctrlKey) return;
+  if (e.target && /^(INPUT|TEXTAREA)$/.test(e.target.tagName)) return;
+  try { ttsReset(); } catch (e2) {}
+  const tab = (typeof currentTab === "function") ? currentTab() : null;
+  if (tab && tab.activeRunId) {
+    try { rpc("chat.abort", { sessionKey: tab.sessionKey, runId: tab.activeRunId }); } catch (e2) {}
+    tab.activeRunId = null;
+  }
+  console.log("%c[phone] shush — stopped clawd", "color:#e55a2b;font-weight:bold");
+  bcLog("shush", "🤚 Shift+S — manually stopped clawd");
+});
+if ($phoneBadge) {
+  $phoneBadge.addEventListener("click", () => setPhoneMode(!_phoneMode));
+  $phoneBadge.addEventListener("keydown", (e) => {
+    if (e.key === "Enter" || e.key === " ") { e.preventDefault(); setPhoneMode(!_phoneMode); }
+  });
+}
+renderPhoneBadge();
 
 // ── Live diagnostic chip (top-left in OBS mode) ──────────────────────────
 // Shows _ttsMode + connection + whether audio is currently playing. Updates
@@ -4376,6 +4917,8 @@ try {
     if (e.data === "toggle-mic" && $btnMic) $btnMic.click();
     else if (e.data === "ptt-down") pttDown();
     else if (e.data === "ptt-up") pttUp();
+    else if (e.data === "toggle-phone") setPhoneMode(!_phoneMode);         // backchannel control button
+    else if (e.data === "toggle-trusted") setFullAccess(!state.fullAccess); // backchannel control button
     else if (e.data === "stop") {
       // PANIC STOP relayed from the backchannel /stop (POST /trigger-stop).
       // Kill the voice immediately — works even when no run is active (model
@@ -4545,6 +5088,31 @@ setInterval(() => fetchSessionStats({ countCost: false }), 7000);
   };
   window.__clawdMeters = meters;
 
+  // ── Device picks (bottom-left OUT/IN dropdowns) ──────────────────────────
+  // null = "auto" (today's behavior). A pick stores {id, label} so it can
+  // survive a deviceId rotation (Chrome regenerates ids per profile) by
+  // falling back to a label match.
+  function getDevicePick(kind) {
+    try {
+      const v = JSON.parse(localStorage.getItem(kind === "out" ? "clawd.audioOut" : "clawd.audioIn") || "null");
+      return (v && v.id) ? v : null;
+    } catch { return null; }
+  }
+  function setDevicePick(kind, pick) {
+    const k = kind === "out" ? "clawd.audioOut" : "clawd.audioIn";
+    if (pick) localStorage.setItem(k, JSON.stringify(pick));
+    else localStorage.removeItem(k);
+  }
+  // Resolve a stored pick against the CURRENT device list; null = use auto
+  // (either nothing picked, or the picked device is unplugged/renamed).
+  function resolveDevicePick(kind, devices) {
+    const stored = getDevicePick(kind);
+    if (!stored) return null;
+    return devices.find(d => d.deviceId === stored.id)
+        || devices.find(d => d.label && d.label === stored.label)
+        || null;
+  }
+
   async function setupAudioMeters() {
     const $micRow = document.querySelector("#audio-meters .meter.mic");
     const $spchRow = document.querySelector("#audio-meters .meter.speech");
@@ -4583,53 +5151,62 @@ setInterval(() => fetchSessionStats({ countCost: false }), 7000);
     meters.spkAnalyser.smoothingTimeConstant = 0.6;
     meters.spkAnalyser.connect(meters.ctx.destination);
     // Mic side: prime perms with a generic request so Safari/Chrome
-    // populate device labels in enumerateDevices, then re-grab the stream
-    // pinned to BlackHole 16ch by deviceId if it exists. Safari doesn't
-    // honor system-default for getUserMedia the way Chrome does, so the
-    // explicit deviceId pin is the only reliable way to ensure we capture
-    // from the BlackHole bridge.
+    // populate device labels in enumerateDevices, then open the stream —
+    // system default in "auto", or pinned to the IN dropdown's pick.
+    // Re-callable so the picker can swap mics live (stops the old stream,
+    // rewires the analyser + micBuf).
     meters.activeMicLabel = "(none)";
-    try {
-      // Enumerate first so we know what BH-2ch and BH-16ch actually are.
-      const probe = await navigator.mediaDevices.getUserMedia({ audio: true });
-      probe.getTracks().forEach(t => t.stop());
-      const devs = await navigator.mediaDevices.enumerateDevices();
-      const inputs = devs.filter(d => d.kind === "audioinput");
-      const bh16In = inputs.find(d => /blackhole\s*16ch/i.test(d.label));
-      const bh2In  = inputs.find(d => /blackhole\s*2ch/i.test(d.label));
-      meters.bh16InId = bh16In ? bh16In.deviceId : null;
-      meters.bh2InId  = bh2In  ? bh2In.deviceId  : null;
-      console.log("%c[clawd] input deviceIds:", "color:#34eeb6",
-        "BH-16ch:", (meters.bh16InId || "").slice(0, 16) + "…",
-        "BH-2ch:",  (meters.bh2InId  || "").slice(0, 16) + "…");
+    let micBuf = null;
+    meters.openMic = async () => {
+      try { if (meters.micStream) meters.micStream.getTracks().forEach(t => t.stop()); } catch {}
+      try { if (meters.micSrc) meters.micSrc.disconnect(); } catch {}
+      meters.micStream = null; meters.micSrc = null; meters.micAnalyser = null;
+      try {
+        // Enumerate first so we know what BH-2ch and BH-16ch actually are.
+        const probe = await navigator.mediaDevices.getUserMedia({ audio: true });
+        probe.getTracks().forEach(t => t.stop());
+        const devs = await navigator.mediaDevices.enumerateDevices();
+        const inputs = devs.filter(d => d.kind === "audioinput");
+        const bh16In = inputs.find(d => /blackhole\s*16ch/i.test(d.label));
+        const bh2In  = inputs.find(d => /blackhole\s*2ch/i.test(d.label));
+        meters.bh16InId = bh16In ? bh16In.deviceId : null;
+        meters.bh2InId  = bh2In  ? bh2In.deviceId  : null;
+        console.log("%c[clawd] input deviceIds:", "color:#34eeb6",
+          "BH-16ch:", (meters.bh16InId || "").slice(0, 16) + "…",
+          "BH-2ch:",  (meters.bh2InId  || "").slice(0, 16) + "…");
 
-      // Open with default + AEC/AGC off. Don't pin deviceId — Safari has
-      // been silently redirecting that to BH-2ch regardless.
-      const stream = await navigator.mediaDevices.getUserMedia({
-        audio: { echoCancellation: false, autoGainControl: false, noiseSuppression: false }
-      });
-      const track = stream.getAudioTracks()[0];
-      const settings = (track && track.getSettings) ? track.getSettings() : {};
-      meters.activeMicLabel = (track && track.label) || "default";
-      meters.activeMicDeviceId = settings.deviceId || "";
-      console.log("%c[clawd] mic stream open on:", "color:#34eeb6",
-        "label:", meters.activeMicLabel,
-        "got deviceId:", meters.activeMicDeviceId.slice(0, 16) + "…",
-        "matches BH-16ch?", meters.activeMicDeviceId === meters.bh16InId,
-        "matches BH-2ch?",  meters.activeMicDeviceId === meters.bh2InId,
-        "channels:", settings.channelCount);
-      // Mic stream goes through ctxIn (no setSinkId), keeping its physical
-      // device binding intact regardless of what the OUTPUT ctx is routed to.
-      const src = meters.ctxIn.createMediaStreamSource(stream);
-      meters.micAnalyser = meters.ctxIn.createAnalyser();
-      meters.micAnalyser.fftSize = 1024;
-      meters.micAnalyser.smoothingTimeConstant = 0.6;
-      src.connect(meters.micAnalyser);
-    } catch (e) {
-      console.warn("[meters] mic capture failed:", e.name, e.message);
-      meters.activeMicLabel = `failed: ${e.name}`;
-    }
-    const micBuf = meters.micAnalyser ? new Uint8Array(meters.micAnalyser.fftSize) : null;
+        // AEC/AGC off. In auto, don't pin deviceId — Safari has been silently
+        // redirecting pins to BH-2ch regardless. A manual IN pick pins exact.
+        const inPick = resolveDevicePick("in", inputs);
+        const audioConstraints = { echoCancellation: false, autoGainControl: false, noiseSuppression: false };
+        if (inPick) audioConstraints.deviceId = { exact: inPick.deviceId };
+        const stream = await navigator.mediaDevices.getUserMedia({ audio: audioConstraints });
+        const track = stream.getAudioTracks()[0];
+        const settings = (track && track.getSettings) ? track.getSettings() : {};
+        meters.activeMicLabel = (track && track.label) || "default";
+        meters.activeMicDeviceId = settings.deviceId || "";
+        console.log("%c[clawd] mic stream open on:", "color:#34eeb6",
+          "label:", meters.activeMicLabel,
+          "got deviceId:", meters.activeMicDeviceId.slice(0, 16) + "…",
+          "picked:", inPick ? inPick.label : "(auto)",
+          "matches BH-16ch?", meters.activeMicDeviceId === meters.bh16InId,
+          "matches BH-2ch?",  meters.activeMicDeviceId === meters.bh2InId,
+          "channels:", settings.channelCount);
+        // Mic stream goes through ctxIn (no setSinkId), keeping its physical
+        // device binding intact regardless of what the OUTPUT ctx is routed to.
+        meters.micStream = stream;
+        meters.micSrc = meters.ctxIn.createMediaStreamSource(stream);
+        meters.micAnalyser = meters.ctxIn.createAnalyser();
+        meters.micAnalyser.fftSize = 1024;
+        meters.micAnalyser.smoothingTimeConstant = 0.6;
+        meters.micSrc.connect(meters.micAnalyser);
+        micBuf = new Uint8Array(meters.micAnalyser.fftSize);
+      } catch (e) {
+        console.warn("[meters] mic capture failed:", e.name, e.message);
+        meters.activeMicLabel = `failed: ${e.name}`;
+      }
+    };
+    await meters.openMic();
     const spkBuf = new Uint8Array(meters.spkAnalyser.fftSize);
     const rms = (buf) => {
       let sum = 0;
@@ -4651,6 +5228,44 @@ setInterval(() => fetchSessionStats({ countCost: false }), 7000);
       const spct = Math.min(100, rms(spkBuf) * 240);
       $spk.style.width = spct.toFixed(1) + "%";
       $spkRow.classList.toggle("idle", spct < 1);
+
+      // ── Phone-mode energy barge-in ──────────────────────────────────────
+      // While clawd is speaking, the mic (`pct`) carries his TTS echo. The
+      // RESIDUAL — mic minus his actual output level (`spct`) — is the energy
+      // NOT explained by clawd = the user's voice. Track a slow baseline of that
+      // residual; a SUSTAINED jump above it = the user talking over him → cut him
+      // off. Using the residual (not raw mic) is what stops clawd from barging in
+      // on his OWN next sentence after a pause: when he resumes, pct and spct
+      // rise together, so the residual stays flat. Reacts in ~130ms vs the
+      // finalized-transcript path (seconds of Web Speech lag).
+      if (_phoneMode && _ttsAudio) {
+        const residual = pct - spct;
+        _echoBaseline += (residual - _echoBaseline) * 0.04;   // slow follow
+        if (_bargeWarm < 12) {
+          // Let the baseline settle at each chunk's start before we trust it.
+          _bargeWarm++;
+          _echoBaseline = residual;
+          _bargeFrames = 0;
+        } else {
+          const over = residual - _echoBaseline;
+          if (pct > PHONE_BARGE_MIN_MIC && over > PHONE_BARGE_MARGIN) {
+            // OFF by default: the mic is dominated by clawd's own loud echo while
+            // the user's voice reads weak (1–3%), so energy can't tell them apart
+            // and would just self-barge on his echo. Opt in with window.__bargeEnergy
+            // only if a rig has a strong, isolated user mic.
+            if (++_bargeFrames >= PHONE_BARGE_FRAMES) { _bargeFrames = 0; if (window.__bargeEnergy) phoneBargeIn(); }
+          } else if (_bargeFrames > 0) {
+            _bargeFrames--;
+          }
+          if (window.__bargeDebug && (++_bargeDbgTick % 20 === 0)) {
+            console.log(`[barge] mic=${pct.toFixed(0)} out=${spct.toFixed(0)} resid=${residual.toFixed(0)} base=${_echoBaseline.toFixed(0)} over=${over.toFixed(0)} f=${_bargeFrames}`);
+          }
+        }
+      } else {
+        _echoBaseline = 0;
+        _bargeFrames = 0;
+        _bargeWarm = 0;
+      }
       // Voice orb level: track the user's voice while listening/armed, and
       // clawd's own voice while it's speaking. Fast attack / slow release so
       // the sphere snaps to speech but glides back down, never jittery.
@@ -4669,39 +5284,63 @@ setInterval(() => fetchSessionStats({ countCost: false }), 7000);
     // the system default — likely BlackHole 16ch in this setup — and we'd
     // feedback into clawd's own mic.
     await setupBlackHoleBridge();
+    setupDevicePickers();
   }
 
   async function setupBlackHoleBridge() {
     const $routing = document.querySelector("#audio-meters .routing");
     const setRouting = (html) => { if ($routing) $routing.innerHTML = html; };
+    // Insecure origin (plain http over the LAN) → Chrome removes
+    // navigator.mediaDevices entirely: no mic, no SR, no device pickers.
+    // Say exactly what to do instead of a cryptic enumerate failure.
+    if (!navigator.mediaDevices) {
+      if ($routing) $routing.style.whiteSpace = "normal";
+      setRouting(
+        `<span class="warn">mic APIs blocked — ${escapeHtml(location.origin)} is not a secure origin.` +
+        ` Fix on THIS machine: chrome://flags/#unsafely-treat-insecure-origin-as-secure` +
+        ` → add ${escapeHtml(location.origin)} → relaunch Chrome (fully quit first).</span>`);
+      console.error(`[clawd] navigator.mediaDevices missing — insecure origin. ` +
+        `Enable chrome://flags/#unsafely-treat-insecure-origin-as-secure for ${location.origin} and relaunch.`);
+      return;
+    }
     try {
       const devices = await navigator.mediaDevices.enumerateDevices();
-      const bh2Out = devices.find(d => d.kind === "audiooutput" && /blackhole\s*2ch/i.test(d.label));
+      const outs   = devices.filter(d => d.kind === "audiooutput");
+      const bh2Out = outs.find(d => /blackhole\s*2ch/i.test(d.label));
       const bh16In = devices.find(d => d.kind === "audioinput"  && /blackhole\s*16ch/i.test(d.label));
-      const defaultIn = devices.find(d => d.kind === "audioinput" && d.deviceId === "default");
 
-      // Output: route ctx → BlackHole 2ch if present.
-      let outLabel = "default (no BlackHole 2ch found)";
+      // Output: a manual OUT pick wins; auto = BlackHole 2ch if present.
+      const outPick = resolveDevicePick("out", outs);
+      const inPick  = resolveDevicePick("in", devices.filter(d => d.kind === "audioinput"));
+      const target = outPick || bh2Out;
+      const targetName = outPick ? (outPick.label || "picked device") : "BlackHole 2ch";
+      let outLabel = getDevicePick("out") && !outPick
+        ? "picked device missing → default"
+        : "default (no BlackHole 2ch found)";
       let outOk = false;
-      if (bh2Out && meters.ctx) {
+      if (target && meters.ctx) {
         try {
           if (typeof meters.ctx.setSinkId === "function") {
-            await meters.ctx.setSinkId(bh2Out.deviceId);
-            outLabel = "BlackHole 2ch"; outOk = true;
+            await meters.ctx.setSinkId(target.deviceId);
+            outLabel = targetName; outOk = true;
           } else {
             // Older Chrome — rebuild ctx with sinkId option, reconnect analyser.
             try { meters.spkAnalyser.disconnect(); } catch {}
-            meters.ctx = new (window.AudioContext || window.webkitAudioContext)({ sinkId: bh2Out.deviceId });
+            meters.ctx = new (window.AudioContext || window.webkitAudioContext)({ sinkId: target.deviceId });
             if (meters.ctx.state === "suspended") await meters.ctx.resume();
             meters.spkAnalyser = meters.ctx.createAnalyser();
             meters.spkAnalyser.fftSize = 1024;
             meters.spkAnalyser.smoothingTimeConstant = 0.6;
             meters.spkAnalyser.connect(meters.ctx.destination);
-            outLabel = "BlackHole 2ch (ctx rebuilt)"; outOk = true;
+            outLabel = `${targetName} (ctx rebuilt)`; outOk = true;
           }
         } catch (e) {
           outLabel = `setSinkId failed: ${e.message}`;
         }
+      } else if (meters.ctx && typeof meters.ctx.setSinkId === "function") {
+        // Auto with no BlackHole (or a stale pick): undo any previous manual
+        // sink — empty string = system default.
+        try { await meters.ctx.setSinkId(""); } catch {}
       }
       // Input: report the ACTIVE track label from the mic stream we
       // captured (set in setupAudioMeters above). This tells us what the
@@ -4710,20 +5349,78 @@ setInterval(() => fetchSessionStats({ countCost: false }), 7000);
       // can't override it via JS — if mic track label says BlackHole 16ch
       // but SR still fails, that's the SR-on-virtual-device problem.
       let inLabel = meters.activeMicLabel || "(unknown)";
-      const inOk = /blackhole\s*16ch/i.test(inLabel);
-      if (!inOk && bh16In) inLabel += `  (avail: BlackHole 16ch)`;
+      const inOk = inPick ? inLabel === inPick.label
+                          : /blackhole\s*16ch/i.test(inLabel);
+      if (!inOk && !inPick && bh16In) inLabel += `  (avail: BlackHole 16ch)`;
 
       const oCls = outOk ? "ok" : "warn";
       const iCls = inOk ? "ok" : "warn";
       setRouting(
         `<div>OUT → <span class="${oCls}">${escapeHtml(outLabel)}</span></div>` +
-        `<div>IN  ← <span class="${iCls}">${escapeHtml(inLabel)}</span></div>`
+        `<div>IN  ← <span class="${iCls}">${escapeHtml(inLabel)}</span></div>` +
+        (inPick ? `<div class="warn">SR ← OS default mic (picker can't move it)</div>` : "")
       );
-      console.log("%c[clawd] BlackHole bridge", "color:#34eeb6", { outLabel, outOk, inLabel, inOk });
+      console.log("%c[clawd] BlackHole bridge", "color:#34eeb6", { outLabel, outOk, inLabel, inOk, outPick, inPick });
     } catch (e) {
       setRouting(`<span class="warn">routing setup failed: ${escapeHtml(e.message)}</span>`);
       console.warn("[clawd] BlackHole bridge failed:", e);
     }
+  }
+
+  // ── Bottom-left device pickers ───────────────────────────────────────────
+  // Fills the OUT/IN <select>s from enumerateDevices (labels are populated
+  // because setupAudioMeters already primed mic permission). "auto" = the
+  // rig's default behavior. Changes apply live and persist per-browser.
+  function setupDevicePickers() {
+    const $in  = document.getElementById("pick-in");
+    const $out = document.getElementById("pick-out");
+    if (!$in || !$out) return;
+    const refill = async () => {
+      if (!navigator.mediaDevices) {
+        // Insecure origin — no device APIs. Leave a breadcrumb in the boxes.
+        for (const $sel of [$in, $out]) {
+          $sel.innerHTML = "";
+          const o = document.createElement("option");
+          o.textContent = "n/a — insecure origin (see routing ↑)";
+          o.disabled = true; o.selected = true;
+          $sel.appendChild(o);
+        }
+        return;
+      }
+      let devs = [];
+      try { devs = await navigator.mediaDevices.enumerateDevices(); } catch { return; }
+      const fill = ($sel, kind, list) => {
+        const stored = getDevicePick(kind);
+        $sel.innerHTML = "";
+        const auto = document.createElement("option");
+        auto.value = "";
+        auto.textContent = kind === "out" ? "auto (BlackHole 2ch → default)" : "auto (system default)";
+        $sel.appendChild(auto);
+        for (const d of list) {
+          const o = document.createElement("option");
+          o.value = d.deviceId;
+          o.textContent = d.label || `device ${d.deviceId.slice(0, 8)}…`;
+          if (stored && (stored.id === d.deviceId || (d.label && stored.label === d.label))) o.selected = true;
+          $sel.appendChild(o);
+        }
+      };
+      fill($out, "out", devs.filter(d => d.kind === "audiooutput" && d.deviceId));
+      fill($in,  "in",  devs.filter(d => d.kind === "audioinput"  && d.deviceId));
+    };
+    const pickFrom = ($sel) => $sel.value
+      ? { id: $sel.value, label: $sel.options[$sel.selectedIndex].textContent }
+      : null;
+    $out.addEventListener("change", async () => {
+      setDevicePick("out", pickFrom($out));
+      await setupBlackHoleBridge();
+    });
+    $in.addEventListener("change", async () => {
+      setDevicePick("in", pickFrom($in));
+      if (meters.openMic) await meters.openMic();
+      await setupBlackHoleBridge();   // refresh the routing readout
+    });
+    try { navigator.mediaDevices.addEventListener("devicechange", refill); } catch {}
+    refill();
   }
 
   function escapeHtml(s) {
@@ -4752,6 +5449,12 @@ setInterval(() => fetchSessionStats({ countCost: false }), 7000);
     }
     startWakeRecog();
     setupAudioMeters().then(setupToneTests);
+    // Barge-mic auto-detection is SHELVED for now (the goal is on-call barge via
+    // BlackHole, not the local mic). Off by default so production never grabs an
+    // extra mic or self-interrupts. Re-enable later with:
+    //   localStorage.setItem("clawd.barge","1")   (then reload)
+    // Shift+S is the reliable manual stop meanwhile; Shift+M scans mics.
+    if (localStorage.getItem("clawd.barge") === "1") setupBargeMic();
     console.log("%c[clawd] audio unlocked, wake-word recognizer started", "color:#34eeb6");
   }
 

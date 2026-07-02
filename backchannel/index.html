@@ -125,6 +125,27 @@
   .msg.system { align-self: center; background: transparent; color: var(--muted); font-size: 12px; font-style: italic; max-width: 100%; }
   .msg.tool { align-self: flex-start; background: var(--bg-soft); border: 1px solid var(--line); font-family: ui-monospace, Menlo, monospace; font-size: 12px; color: var(--muted); padding: 6px 10px; max-width: 92%; }
   .msg.tool .tag { color: var(--voice); }
+  /* Live debug feed from the voice page (:7900) — heard STT + barge/gate/mic. */
+  .msg.vdbg { align-self: stretch; background: transparent; border: 0; font-family: ui-monospace, Menlo, monospace; font-size: 11px; color: var(--muted); padding: 1px 2px; max-width: 100%; opacity: 0.85; }
+  .msg.vdbg .tag { display: inline-block; min-width: 46px; color: var(--muted); opacity: 0.7; }
+  .msg.vdbg.k-heard { color: var(--fg); }
+  .msg.vdbg.k-heard .tag { color: var(--voice); }
+  .msg.vdbg.k-barge, .msg.vdbg.k-shush { color: #e5a52b; }
+  .msg.vdbg.k-gate { color: var(--priv); }
+  .msg.vdbg.k-sent { color: var(--voice); }
+  #dbgToggle { position: fixed; top: 8px; right: 8px; z-index: 50; font-size: 11px; font-family: ui-monospace, Menlo, monospace; color: var(--muted); background: var(--bg-soft); border: 1px solid var(--line); border-radius: 999px; padding: 3px 9px; cursor: pointer; opacity: 0.8; }
+  body.hide-dbg .msg.vdbg { display: none; }
+  /* Floating voice-control buttons (drive the :7900 page): phone mode, full access. */
+  #voiceCtl { position: fixed; right: 10px; bottom: 176px; z-index: 60; display: flex; flex-direction: column; gap: 6px; }
+  #voiceCtl button {
+    font-family: ui-monospace, Menlo, monospace; font-size: 12px; font-weight: 600;
+    color: var(--muted); background: var(--bg-soft); border: 1px solid var(--line);
+    border-radius: 999px; padding: 6px 12px; cursor: pointer; white-space: nowrap;
+    box-shadow: 0 2px 10px rgba(0,0,0,0.35); opacity: 0.92; transition: all 0.12s;
+  }
+  #voiceCtl button:active { transform: scale(0.96); }
+  #voiceCtl button.vc-phone.on { background: rgba(52,238,182,0.9); color: #04211a; border-color: rgba(52,238,182,0.5); }
+  #voiceCtl button.vc-trust.on { background: rgba(204,43,43,0.9); color: #fff; border-color: var(--voice); }
 
   /* live process: thinking + tool cards inside an assistant turn */
   .msg.assistant .thinking, .msg.assistant .tools { display: flex; flex-direction: column; gap: 6px; }
@@ -1236,6 +1257,80 @@ function renderNote(text) {
   scrollToBottom();
 }
 
+// Live debug line from the voice page (:7900) — what clawd hears + barge/gate/mic.
+// Dim monospace; kind drives a color + tag. Kept lightweight and de-duped so a
+// chatty feed doesn't drown the chat.
+let _lastDbg = "";
+function renderDebug(kind, msg) {
+  // Let the phone/full-access control buttons reflect the live state reported by
+  // the voice page (setPhoneMode / setFullAccess emit these).
+  if (kind === "phone") setVoiceCtlState("vc-phone", /ON/.test(msg));
+  else if (kind === "trusted") setVoiceCtlState("vc-trust", /ON/.test(msg));
+  const key = kind + "|" + msg;
+  if (key === _lastDbg) return;        // collapse identical repeats (e.g. level snapshots)
+  _lastDbg = key;
+  const el = document.createElement("div");
+  el.className = "msg vdbg k-" + (kind || "dbg").replace(/[^a-z0-9]/gi, "");
+  el.innerHTML = `<span class="tag">${esc(kind || "dbg")}</span>` + esc(msg);
+  $log.appendChild(el);
+  // Cap the number of debug lines so a long call doesn't grow the DOM forever.
+  const dbgs = $log.querySelectorAll(".msg.vdbg");
+  if (dbgs.length > 120) dbgs[0].remove();
+  scrollToBottom();
+}
+
+// Subscribe to the voice page's SSE debug feed. Cross-origin to :7900 (same host
+// as this page was loaded from), which sends Access-Control-Allow-Origin:*.
+// Non-JSON events (the page's own "stop"/"ptt-*" control strings) are ignored.
+// ── Floating voice-control buttons (drive the :7900 voice page) ─────────────
+// POST to the same /trigger-* cross-page channel as /stop and ptt. The voice
+// page relays these via SSE and flips phone-call mode / full-access. Their
+// on/off highlight is driven by the phone/trusted debug events (see renderDebug).
+// The voice server gates non-loopback requests behind the same rig key this
+// page was opened with (?k=…), so every cross-origin call to :7900 carries it.
+function voiceQS() {
+  const k = new URLSearchParams(location.search).get("k");
+  return k ? `?k=${encodeURIComponent(k)}` : "";
+}
+function voiceTrigger(path) {
+  try {
+    fetch(`${location.protocol}//${location.hostname}:7900/${path}${voiceQS()}`,
+          { method: "POST", mode: "no-cors", keepalive: true });
+  } catch (e) { /* voice page may be down; ignore */ }
+}
+function setVoiceCtlState(cls, on) {
+  const b = document.querySelector("#voiceCtl ." + cls);
+  if (b) b.classList.toggle("on", !!on);
+}
+function mountVoiceCtl() {
+  const wrap = document.createElement("div");
+  wrap.id = "voiceCtl";
+  const mk = (cls, label, path) => {
+    const b = document.createElement("button");
+    b.className = cls;
+    b.textContent = label;
+    b.addEventListener("click", () => voiceTrigger(path));
+    wrap.appendChild(b);
+    return b;
+  };
+  mk("vc-phone", "📞 phone", "trigger-phone");
+  mk("vc-trust", "🔓 trust", "trigger-trusted");
+  document.body.appendChild(wrap);
+}
+
+function connectVoiceDebug() {
+  try {
+    const url = `${location.protocol}//${location.hostname}:7900/events${voiceQS()}`;
+    const es = new EventSource(url);
+    es.onmessage = (e) => {
+      let obj;
+      try { obj = JSON.parse(e.data); } catch (_) { return; }
+      if (obj && obj.ev === "vdbg") renderDebug(obj.kind, obj.msg);
+    };
+    es.onerror = () => { /* EventSource auto-reconnects */ };
+  } catch (e) {}
+}
+
 // ── sending ───────────────────────────────────────────────────────────────
 function updateSendButton() {
   if (state.activeRunId) {
@@ -1354,7 +1449,7 @@ async function onStop() {
   //    common case, which chat.abort alone can NOT stop. Same host as this page
   //    (both served from the same machine), video-chat port is 7900.
   try {
-    fetch(`${location.protocol}//${location.hostname}:7900/trigger-stop`,
+    fetch(`${location.protocol}//${location.hostname}:7900/trigger-stop${voiceQS()}`,
           { method: "POST", mode: "no-cors", keepalive: true });
   } catch (e) { /* video-chat may be down; ignore */ }
   // 2) Abort the model run too, if one is in flight (stops further generation).
@@ -1381,7 +1476,7 @@ let _pttHeld = false;
 
 function pttTrigger(updown) {
   try {
-    fetch(`${location.protocol}//${location.hostname}:7900/trigger-ptt-${updown}`,
+    fetch(`${location.protocol}//${location.hostname}:7900/trigger-ptt-${updown}${voiceQS()}`,
           { method: "POST", mode: "no-cors", keepalive: true });
   } catch (e) { /* video-chat may be down; ignore */ }
 }
@@ -1456,6 +1551,20 @@ $btnReload.addEventListener("click", () => { if (state.connected) loadHistory();
   // Pull the server-side shortcut list (survives IP changes) and repaint.
   if (await syncShortcutsFromServer()) renderShortcuts();
   connect();
+  // Live debug feed from the voice page (heard STT + barge/gate/mic events).
+  if (localStorage.getItem("bc.hideDbg") === "1") document.body.classList.add("hide-dbg");
+  const $dbgToggle = document.createElement("div");
+  $dbgToggle.id = "dbgToggle";
+  const paintDbgToggle = () => { $dbgToggle.textContent = document.body.classList.contains("hide-dbg") ? "debug ▷" : "debug ◢"; };
+  $dbgToggle.addEventListener("click", () => {
+    const hide = document.body.classList.toggle("hide-dbg");
+    localStorage.setItem("bc.hideDbg", hide ? "1" : "0");
+    paintDbgToggle();
+  });
+  document.body.appendChild($dbgToggle);
+  paintDbgToggle();
+  mountVoiceCtl();
+  connectVoiceDebug();
 })();
 </script>
 </body>

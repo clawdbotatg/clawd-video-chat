@@ -29,6 +29,7 @@ import hashlib
 import json
 import os
 import secrets
+import ssl
 import sys
 import threading
 import time
@@ -328,25 +329,52 @@ async def _relay(client, gateway_url, token):
     await asyncio.gather(pump(client, gw, "ui→gw"), pump(gw, client, "gw→ui"))
 
 
-async def _serve_proxy(bind, port, gateway_url, token):
+async def _serve_proxy(bind, port, gateway_url, token, ssl_ctx=None):
     # max_size=None: chat.history frames can exceed the 1 MiB default.
     # ping_interval=None: the gateway speaks its own protocol; don't let
     # websocket-level keepalive pings tear down an idle session.
     async with websockets.serve(
         lambda c: _relay(c, gateway_url, token), bind, port,
-        max_size=None, ping_interval=None,
+        max_size=None, ping_interval=None, ssl=ssl_ctx,
     ):
-        print(f"[proxy] ws proxy on {bind}:{port} → {gateway_url}")
+        scheme = "wss" if ssl_ctx else "ws"
+        print(f"[proxy] {scheme} proxy on {bind}:{port} → {gateway_url}")
         await asyncio.Future()  # run forever
 
 
-def start_proxy_thread(bind, port, gateway_url, token):
+def start_proxy_thread(bind, port, gateway_url, token, ssl_ctx=None):
     def run():
         try:
-            asyncio.run(_serve_proxy(bind, port, gateway_url, token))
+            asyncio.run(_serve_proxy(bind, port, gateway_url, token, ssl_ctx))
         except Exception as e:
             print(f"[proxy] crashed: {e}")
     threading.Thread(target=run, daemon=True).start()
+
+
+# ── Optional TLS (wss) listener ───────────────────────────────────────────────
+# An HTTPS voice page can't open a plain ws:// socket (mixed content), so when
+# a cert exists we ALSO serve the same relay over TLS on PROXY_TLS_PORT.
+# Default cert: the mkcert-minted pair in the parent project's certs/ dir
+# (shared with the voice server's HTTPS listener). The plain ws listener stays
+# untouched for the on-box rig and http visitors.
+TLS_CERT = os.environ.get("BACKCHANNEL_TLS_CERT",
+                          str(Path(__file__).parent.parent / "certs" / "lan.pem"))
+TLS_KEY = os.environ.get("BACKCHANNEL_TLS_KEY",
+                         str(Path(__file__).parent.parent / "certs" / "lan-key.pem"))
+PROXY_TLS_PORT = int(os.environ.get("PROXY_TLS_PORT", str(PROXY_PORT + 1)))
+
+
+def make_tls_context():
+    """Return an SSLContext if the cert pair exists, else None."""
+    if not (os.path.exists(TLS_CERT) and os.path.exists(TLS_KEY)):
+        return None
+    try:
+        ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        ctx.load_cert_chain(TLS_CERT, TLS_KEY)
+        return ctx
+    except Exception as e:
+        print(f"[proxy] TLS cert load failed ({TLS_CERT}): {e}", flush=True)
+        return None
 
 
 # ── Static HTTP + /config ─────────────────────────────────────────────────────
@@ -477,6 +505,13 @@ if __name__ == "__main__":
         start_proxy_thread(BIND, PROXY_PORT, target["wsUrl"], target["token"])
         if ip:
             print(f"   ws proxy         → ws://{ip}:{PROXY_PORT} (browser → proxy → gateway, server-side auth, per-conn identity)")
+        tls_ctx = make_tls_context()
+        if tls_ctx:
+            start_proxy_thread(BIND, PROXY_TLS_PORT, target["wsUrl"], target["token"], tls_ctx)
+            if ip:
+                print(f"   wss proxy        → wss://{ip}:{PROXY_TLS_PORT} (TLS twin of the above, for HTTPS pages)")
+        else:
+            print(f"   [info] no TLS cert at {TLS_CERT} — wss proxy off (http pages unaffected)")
     else:
         missing = []
         if websockets is None:
