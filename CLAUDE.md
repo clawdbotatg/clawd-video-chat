@@ -23,6 +23,7 @@ These notes are for the things you can't infer from reading code.
 | "fire up the video chat" / "fire up the system" / "bring up the bridge" / "start everything" / "set it all up" | **The full runbook below** (mainly: `./slop-bridge.sh`) |
 | "tear down" / "give me my mic back" / "restore audio" / "stop the bridge" | Run `./slop-bridge-stop.sh` |
 | "open clawd" (no bridge, just the page) | `open -a "Google Chrome" http://127.0.0.1:7900` after confirming `server.py` is up |
+| "have him join the meeting" / "take notes on this Google Meet" | clawd's brain runs `meet join <url>` — see **[`GOOGLE-MEET.md`](GOOGLE-MEET.md)** (silent note-taker: avatar on, mic muted, per-meeting transcript) |
 
 ## "Fire up the video chat" — full runbook
 
