@@ -130,6 +130,25 @@ def write_shortcuts(items):
         print(f"[shortcuts] write failed: {e}", flush=True)
         return False
 
+
+# Which Claude subscription the default credential store (~/.claude) is logged
+# into right now. Read fresh on every request so a logout/login shows up in the
+# UI within one poll — no server restart needed.
+CLAUDE_JSON = Path.home() / ".claude.json"
+
+
+def read_claude_account():
+    """Return {email, org} for the active ~/.claude login, or {} if unknown."""
+    try:
+        acct = json.loads(CLAUDE_JSON.read_text()).get("oauthAccount") or {}
+        return {
+            "email": acct.get("emailAddress", ""),
+            "org": acct.get("organizationName", ""),
+        }
+    except Exception as e:
+        print(f"[account] read failed: {e}", flush=True)
+        return {}
+
 # The Origin the proxy presents to the gateway. The gateway trusts loopback
 # origins ("from the gateway host"), so use one here — that's what makes LAN
 # clients work without editing the gateway's allowedOrigins.
@@ -396,6 +415,8 @@ class Handler(BaseHTTPRequestHandler):
             self.send_json(self.client_config())
         elif path == "/shortcuts":
             self.send_json(read_shortcuts())
+        elif path == "/account":
+            self.send_json(read_claude_account())
         else:
             self.send_error(404)
 

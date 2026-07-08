@@ -45,6 +45,13 @@
   header .dot.connecting { background: var(--warn); animation: pulse 1.2s infinite ease-in-out; }
   @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.35; } }
   header .spacer { flex: 1; }
+  header .account {
+    text-align: right; line-height: 1.35; min-width: 0;
+    font-size: 10px; color: var(--muted);
+    font-family: ui-monospace, Menlo, monospace;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  header .account .org { color: var(--ok); font-weight: 600; display: block; }
   header button {
     background: transparent; color: var(--muted); border: 1px solid var(--line);
     padding: 6px 10px; font-size: 12px; border-radius: 8px; cursor: pointer;
@@ -352,6 +359,7 @@
       <div class="session" id="sessionLabel">…</div>
     </div>
     <div class="spacer"></div>
+    <div class="account" id="accountLabel" title="active claude account (~/.claude login)"></div>
     <button id="btnReload" title="reload history">↻</button>
   </header>
 
@@ -1534,8 +1542,26 @@ $input.addEventListener("keydown", (e) => {
 $send.addEventListener("click", onSend);
 $btnReload.addEventListener("click", () => { if (state.connected) loadHistory(); });
 
+// ── account badge — which claude subscription ~/.claude is logged into ─────
+const $accountLabel = document.getElementById("accountLabel");
+async function refreshAccount() {
+  try {
+    const r = await fetch("/account" + window.location.search);
+    const a = await r.json();
+    if (!a.email && !a.org) { $accountLabel.textContent = ""; return; }
+    $accountLabel.innerHTML = "";
+    const org = document.createElement("span");
+    org.className = "org";
+    org.textContent = a.org || "(no org)";
+    $accountLabel.appendChild(org);
+    $accountLabel.appendChild(document.createTextNode(a.email || ""));
+  } catch (e) { /* transient — keep the last known value */ }
+}
+setInterval(refreshAccount, 30000);
+
 // ── boot ──────────────────────────────────────────────────────────────────
 (async function boot() {
+  refreshAccount();
   try {
     // Forward the ?k=<token> from our own URL so the gated /config (and the
     // wsUrl it returns, which embeds the token for the proxy) are reachable.
