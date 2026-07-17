@@ -276,7 +276,13 @@ async def run_claude(session_key, run_id, prompt, public, trusted=False):
             return_meta=True,
             proc_holder=proc_holder,
         )
-        text = result["text"] or text
+        # Only adopt the engine's final text when it EXTENDS what we streamed.
+        # result["text"] carries just the last assistant message; on a
+        # tool-using turn the streamed cumulative `text` is longer, and
+        # unconditionally swapping in the shorter final made the page's TTS
+        # see a "diverged" reply and speak the whole answer a second time.
+        if result["text"] and len(result["text"]) > len(text):
+            text = result["text"]
         if result.get("session_id"):
             # The engine already persisted the id; we only mirror it into the gauge
             # sentinel so the :7900 context chip reads OUR live session.
@@ -284,7 +290,21 @@ async def run_claude(session_key, run_id, prompt, public, trusted=False):
     except Exception as e:
         err = str(e)
     finally:
+        aborted = bool(proc_holder.get("aborted"))
         runs.pop(run_id, None)
+
+    if aborted:
+        # Killed mid-turn by chat.abort (barge-in / stop). Whatever streamed
+        # before the kill was already spoken; do NOT emit "final" — the page
+        # would re-speak the partial text after its barge-in reset. "aborted"
+        # makes clients hard-stop audio instead.
+        s["history"].append({"role": "user", "content": [{"type": "text", "text": prompt}]})
+        if text.strip():
+            s["history"].append({"role": "assistant", "content": [{"type": "text", "text": text}]})
+        convo_log("OUT", chan, session_key,
+                  f"(aborted mid-turn; partial reply {len(text)} chars) {text[:200]}")
+        await broadcast_chat(run_id, session_key, "aborted", "")
+        return
 
     if err or not text.strip():
         convo_log("ERR", chan, session_key,
@@ -323,6 +343,12 @@ async def handle_req(ws, frame):
                               {"sessionKey": key, "prevSessionId": prev_sid})
     elif method == "chat.abort":
         holder = runs.get(params.get("runId"))
+        if isinstance(holder, dict):
+            # run_claude reads this after the kill: an aborted run must emit
+            # state "aborted", not a trailing "final" with the partial text
+            # (which the voice page would speak AFTER its barge-in cut the
+            # audio — the reply-heard-twice bug).
+            holder["aborted"] = True
         proc = holder.get("proc") if isinstance(holder, dict) else None
         if proc and proc.poll() is None:
             try:

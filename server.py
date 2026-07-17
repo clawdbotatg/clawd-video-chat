@@ -86,6 +86,36 @@ STT_LOG_PATH = os.path.expanduser(
     os.environ.get("STT_LOG_PATH", "~/clawd/clawd-harness/projects/claude-p-agent/stt-log.jsonl"))
 
 
+def rotate_stt_log(reason="boot"):
+    """Give each call session its own transcript: archive the previous
+    stt-log.jsonl to stt-log-YYYYMMDD-HHMMSS.jsonl next to it and start fresh.
+
+    The ACTIVE path never changes — the brain's `stt` helper reads
+    stt-log.jsonl by name — so rotation renames the old file aside (same
+    per-slice idea as the meetings/<id>.jsonl files). The timestamp is the old
+    file's mtime (≈ when that call last spoke), so archives read as "the call
+    that ended then". Runs at server boot and via POST /api/stt-rotate, which
+    slop-bridge.sh hits when a call starts against an already-running server.
+    No-op if the log is missing or empty. Returns the archive path or None."""
+    try:
+        if not os.path.exists(STT_LOG_PATH) or os.path.getsize(STT_LOG_PATH) == 0:
+            return None
+        base, ext = os.path.splitext(STT_LOG_PATH)
+        stamp = time.strftime("%Y%m%d-%H%M%S",
+                              time.localtime(os.path.getmtime(STT_LOG_PATH)))
+        dest = f"{base}-{stamp}{ext}"
+        n = 1
+        while os.path.exists(dest):          # two rotations in the same second
+            dest = f"{base}-{stamp}.{n}{ext}"
+            n += 1
+        os.rename(STT_LOG_PATH, dest)
+        print(f"[stt] rotated transcript → {os.path.basename(dest)} ({reason})")
+        return dest
+    except Exception as e:
+        print(f"[warn] stt-log rotation failed ({reason}): {e}")
+        return None
+
+
 def load_stt_rows(path=None):
     """Parse a JSONL STT log into a list of dicts (oldest-first). Bad lines skipped.
 
@@ -487,6 +517,20 @@ class Handler(BaseHTTPRequestHandler):
             self.handle_tts()
         elif path == "/api/stt-log":
             self.handle_stt_log()
+        elif path == "/api/stt":
+            self.handle_stt()
+        elif path == "/api/stt-rotate":
+            # New call session on an already-running server (slop-bridge.sh
+            # POSTs this): archive the previous call's transcript.
+            try:
+                length = int(self.headers.get("Content-Length", 0))
+                if length:
+                    self.rfile.read(length)
+            except Exception:
+                pass
+            archived = rotate_stt_log("api")
+            self.send_json({"ok": True,
+                            "archived": os.path.basename(archived) if archived else None})
         elif path == "/api/ask-transcript":
             self.handle_ask_transcript()
         elif path == "/api/should-respond":
@@ -574,6 +618,65 @@ class Handler(BaseHTTPRequestHandler):
             self.wfile.write(b'{"ok":true}')
         else:
             self.send_error(404)
+
+    def handle_stt(self):
+        """EXPERIMENTAL upgraded STT (see NOTES-STT-UPGRADE.md). The page only
+        uses this behind its own feature flag (?stt=openai / localStorage),
+        which defaults OFF — the live webkitSpeechRecognition path is untouched.
+
+        Body = one recorded utterance (MediaRecorder audio/webm;codecs=opus,
+        Content-Type header carries the mime). We forward it to OpenAI's
+        transcription endpoint with the same OPENAI_API_KEY the TTS proxy
+        already uses and return {"text": ...}. Model via OPENAI_STT_MODEL
+        (default gpt-4o-mini-transcribe — fast + cheap; whisper-1 and
+        gpt-4o-transcribe are drop-in alternates)."""
+        key = os.environ.get("OPENAI_API_KEY", "")
+        if not key:
+            self.send_json({"error": "no OPENAI_API_KEY configured"}, status=503)
+            return
+        try:
+            length = int(self.headers.get("Content-Length", 0))
+            audio = self.rfile.read(length) if length else b""
+        except Exception:
+            audio = b""
+        # A sub-~0.2s opus blob is silence/noise — skip the round trip.
+        if len(audio) < 2000:
+            self.send_json({"text": ""})
+            return
+        ctype = (self.headers.get("Content-Type") or "audio/webm").split(";")[0].strip()
+        ext = {"audio/ogg": "ogg", "audio/mp4": "mp4", "audio/wav": "wav",
+               "audio/mpeg": "mp3"}.get(ctype, "webm")
+        model = os.environ.get("OPENAI_STT_MODEL", "gpt-4o-mini-transcribe")
+        # Domain prompt biases the decoder toward the vocabulary webkit SR
+        # mangles worst (overridable per-rig via OPENAI_STT_PROMPT).
+        prompt = os.environ.get(
+            "OPENAI_STT_PROMPT",
+            "Casual technical conversation about software engineering, Ethereum, "
+            "crypto wallets, AI agents, Claude, terminals, and live streaming.")
+        boundary = "clawdstt" + os.urandom(12).hex()
+        parts = []
+        for name, value in (("model", model), ("language", "en"), ("prompt", prompt)):
+            parts.append((f"--{boundary}\r\nContent-Disposition: form-data; "
+                          f"name=\"{name}\"\r\n\r\n{value}\r\n").encode("utf-8"))
+        parts.append((f"--{boundary}\r\nContent-Disposition: form-data; "
+                      f"name=\"file\"; filename=\"utterance.{ext}\"\r\n"
+                      f"Content-Type: {ctype}\r\n\r\n").encode("utf-8"))
+        parts.append(audio)
+        parts.append(f"\r\n--{boundary}--\r\n".encode("utf-8"))
+        req = urllib.request.Request(
+            "https://api.openai.com/v1/audio/transcriptions",
+            data=b"".join(parts),
+            headers={"Authorization": f"Bearer {key}",
+                     "Content-Type": f"multipart/form-data; boundary={boundary}"})
+        try:
+            with urllib.request.urlopen(req, timeout=20) as resp:
+                data = json.loads(resp.read().decode("utf-8"))
+            self.send_json({"text": (data.get("text") or "").strip()})
+        except urllib.error.HTTPError as e:
+            detail = e.read().decode("utf-8", errors="replace")[:300]
+            self.send_json({"error": f"upstream {e.code}: {detail}"}, status=502)
+        except Exception as e:
+            self.send_json({"error": str(e)[:300]}, status=502)
 
     def handle_stt_log(self):
         """Append one heard utterance — or a wake-turn marker — to STT_LOG_PATH.
@@ -1517,6 +1620,9 @@ def check_allowed_origins(port):
 
 
 if __name__ == "__main__":
+    # server.py is started per-call by slop-bridge.sh, so boot ≈ a new call
+    # session: archive the previous call's STT transcript and start fresh.
+    rotate_stt_log("boot")
     settings = resolve_gateway_settings()
     print(f"🕸️  clawd-video-chat → http://127.0.0.1:{PORT}")
     print(f"   gateway          → {settings['wsUrl']}")

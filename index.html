@@ -2432,7 +2432,7 @@ function handleChatEvent(payload) {
         // is a lie. clawdVid.chatting() is fired correctly from
         // audio.onplay when the first TTS chunk actually starts playing.
         t.lastText = text; t.textEl.innerHTML = renderText(text);
-        if (tab === currentTab()) ttsFeed(text, chatState === "final", runId);
+        if (tab === currentTab() && !_ttsSquelchedRuns.has(runId)) ttsFeed(text, chatState === "final", runId);
         // Stats chip — update output estimate so the chip ticks during stream.
         recordOutputEstimate(text, chatState === "final");
       }
@@ -2499,6 +2499,7 @@ function handleChatEvent(payload) {
     // the voice immediately — ttsReset() bumps the turn id, drops the queue,
     // aborts in-flight TTS fetches, and pauses the currently-playing blob.
     // Without this, aborting the run left already-queued audio playing.
+    squelchRunTts(runId);   // and any later stray frame for this run stays silent
     ttsReset();
     t.footerEl.innerHTML = `<div style="color:var(--warn); font-size:12px">⏹ aborted</div>`;
     tab.activeRunId = null;
@@ -2507,6 +2508,7 @@ function handleChatEvent(payload) {
     resolveTabRunCompletion(tab, runId, "aborted");
   } else if (chatState === "error") {
     if (t.tickerId) clearInterval(t.tickerId);
+    squelchRunTts(runId);
     ttsReset();   // stop any audio on error too
     t.footerEl.innerHTML = `<div style="color:var(--bad); font-size:12px">⚠ ${errorMessage || "error"}</div>`;
     tab.activeRunId = null;
@@ -3076,9 +3078,10 @@ async function onSend(opts = {}) {
     // aborting the run and DROPPING the new question (which left turns
     // unanswered and misaligned the whole conversation on a live call).
     if (!opts.interrupt) return onStop();
+    squelchRunTts(tab.activeRunId);  // late frames from the killed run must never re-feed TTS
+    ttsReset();   // stop speaking the previous, now-interrupted answer — cut BEFORE the abort round-trip
     try { await rpc("chat.abort", { sessionKey: tab.sessionKey, runId: tab.activeRunId }); } catch (e) {}
     tab.activeRunId = null;
-    ttsReset();   // stop speaking the previous, now-interrupted answer
   }
   const text = $input.value.trim();
   if (!text) return;
@@ -3183,6 +3186,11 @@ async function onSend(opts = {}) {
 async function onStop() {
   const tab = currentTab();
   if (!tab || !tab.activeRunId) return;
+  // Stop = silence NOW. Don't wait for an "aborted" event that cc-bridge never
+  // sends (it emits a trailing "final" with the partial text instead) — squelch
+  // that run and kill in-flight audio here.
+  squelchRunTts(tab.activeRunId);
+  ttsReset();
   try {
     await rpc("chat.abort", { sessionKey: tab.sessionKey, runId: tab.activeRunId });
   } catch (e) {
@@ -3300,6 +3308,22 @@ const _QUIET_ACKS = ["On it.", "Got it.", "Yep."];
 // filler would happily narrate a private turn's every tool call out loud.
 // Only narrate runs we initiated; private turns stay private.
 const _voiceInitiatedRuns = new Set();
+
+// Runs whose speech the user explicitly killed (voice barge-in, stop, phone
+// barge). cc-bridge's chat.abort kills the process but run_claude still emits
+// a trailing "final" frame carrying the partial text — without this gate that
+// frame lands AFTER our barge-in ttsReset() and the whole half-answer gets
+// spoken again. A barge-in must CANCEL speech, never requeue it, so every
+// frame of a squelched run is dead to TTS forever.
+const _ttsSquelchedRuns = new Set();
+function squelchRunTts(runId) {
+  if (!runId) return;
+  _ttsSquelchedRuns.add(runId);
+  // Bounded: drop oldest entries so a long call doesn't grow this forever.
+  while (_ttsSquelchedRuns.size > 64) {
+    _ttsSquelchedRuns.delete(_ttsSquelchedRuns.values().next().value);
+  }
+}
 
 let _ttsRealArrived = false;        // first "real" chunk enqueued — drops pending tool/thinking
 let _ttsRealAudioStarted = false;   // first "real" chunk actually started playing
@@ -3766,6 +3790,20 @@ function ttsFeed(fullText, isFinal, runId) {
   if (fullText) {
     const common = _commonPrefixLen(fullText, _ttsSpokenText);
     if (_ttsSpokenText && common < _ttsSpokenText.length) {
+      // Diverged from the voiced prefix. Two different situations land here:
+      //  (a) The SAME reply re-issued in rewritten/shorter form — cc-bridge's
+      //      final frame can swap the streamed cumulative text for just the
+      //      last message's text, so the final is a suffix of what we already
+      //      spoke. Re-speaking it is the "answer heard twice" bug: if what we
+      //      voiced already contains this text, swallow it.
+      //  (b) A genuinely NEW reply with no reset in between (e.g. a
+      //      backchannel [SAY] turn) — shares no material prefix; speak from 0.
+      const norm = s => s.replace(/\s+/g, " ").trim();
+      if (norm(_ttsSpokenText).includes(norm(fullText))) {
+        _ttsSpokenUpTo = fullText.length;   // already voiced in full — nothing new to say
+        _ttsSpokenText = fullText;
+        return;
+      }
       _ttsSpokenText = "";       // diverged → fresh reply
       _ttsSpokenUpTo = 0;
       _ttsChunkIndex = 0;
@@ -4165,7 +4203,10 @@ function startWakeRecog() {
     let interim = "";
     for (let i = e.resultIndex; i < e.results.length; i++) {
       const res = e.results[i];
-      if (res.isFinal) handleFinalChunk(res[0].transcript);
+      // stt-upgrade flag: /api/stt (OpenAI) supplies the finalized text —
+      // webkit's finals would double-enter the transcript. Interims still
+      // feed wake arming / silence timers / barge detection below.
+      if (res.isFinal) { if (!_sttUpgradeOn) handleFinalChunk(res[0].transcript); }
       else interim += res[0].transcript;
     }
     _liveInterim = interim.trim();
@@ -4281,6 +4322,14 @@ function armSilenceTimer() {
 // (submitPhoneTurn); otherwise it's a wake-word turn submitted straight to the
 // brain. Decided at FIRE time so a mid-turn mode flip routes correctly.
 function onSilenceElapsed() {
+  // stt-upgrade: a segment may still be transcribing when the silence gap
+  // elapses — hold the submit (bounded) so the utterance's tail isn't clipped
+  // off the turn we send the brain.
+  if (_sttUpgradeOn && _sttInflight > 0) {
+    if (!_sttHoldUntil) _sttHoldUntil = Date.now() + 4000;
+    if (Date.now() < _sttHoldUntil) { _silenceTimer = setTimeout(onSilenceElapsed, 250); return; }
+  }
+  _sttHoldUntil = 0;
   return _phoneMode ? submitPhoneTurn() : submitWakeBuffer();
 }
 
@@ -4416,6 +4465,7 @@ function phoneBargeIn() {
   try { ttsReset(); } catch (e) {}
   const tab = (typeof currentTab === "function") ? currentTab() : null;
   if (tab && tab.activeRunId) {
+    squelchRunTts(tab.activeRunId);
     try { rpc("chat.abort", { sessionKey: tab.sessionKey, runId: tab.activeRunId }); } catch (e) {}
     tab.activeRunId = null;
   }
@@ -4667,6 +4717,7 @@ function handleFinalChunk(rawText) {
       try { ttsReset(); } catch (e) {}
       const tab = (typeof currentTab === "function") ? currentTab() : null;
       if (tab && tab.activeRunId) {
+        squelchRunTts(tab.activeRunId);
         try { rpc("chat.abort", { sessionKey: tab.sessionKey, runId: tab.activeRunId }); } catch (e) {}
         tab.activeRunId = null;
       }
@@ -4684,6 +4735,107 @@ function handleFinalChunk(rawText) {
     setPillState("armed", _phoneMode ? "listening…" : "go on…");
     armSilenceTimer();
   }
+}
+
+// ── EXPERIMENTAL: upgraded STT via server-proxied OpenAI transcription ─────
+// webkitSpeechRecognition mangles technical vocabulary. This path records the
+// SAME mic (BlackHole 2ch, meters.micStream) with MediaRecorder, segments
+// utterances by level (mini-VAD off the meters analyser), and POSTs each
+// segment to /api/stt — OpenAI transcription using the OPENAI_API_KEY the TTS
+// proxy already holds. Returned text flows through handleFinalChunk(), so the
+// echo guard, room transcript, stt-log, and wake buffering are all identical.
+// webkit SR KEEPS RUNNING for interims (fast wake arming, silence timers,
+// barge detection); only its FINALIZED chunks are replaced.
+// Feature-flagged, DEFAULT OFF — the live rig is unaffected until flipped:
+//   on:  ?stt=openai in the URL (sticky via localStorage clawd.sttUpgrade)
+//   off: ?stt=off (clears the sticky flag)
+// Tradeoffs + tuning: NOTES-STT-UPGRADE.md.
+const _sttUpgradeOn = (() => {
+  try {
+    const qp = new URLSearchParams(location.search).get("stt");
+    if (qp === "openai") { localStorage.setItem("clawd.sttUpgrade", "1"); return true; }
+    if (qp === "off" || qp === "webkit") { localStorage.removeItem("clawd.sttUpgrade"); return false; }
+    return localStorage.getItem("clawd.sttUpgrade") === "1";
+  } catch (e) { return false; }
+})();
+const STT_SEG_START_PCT = 7;    // mic RMS-% (same scale as the MIC meter) that opens a segment
+const STT_SEG_STOP_MS = 700;    // this long below the floor closes the segment
+const STT_SEG_MIN_MS = 350;     // shorter than this → discard as a noise blip
+const STT_SEG_MAX_MS = 25000;   // hard cap so a droning room can't run forever
+let _sttInflight = 0;           // segments awaiting /api/stt — submission holds for these
+let _sttHoldUntil = 0;          // bounded-wait deadline while _sttInflight > 0
+
+function startSttUpgradeLoop() {
+  const m = window.__clawdMeters;
+  if (!m || !m.micStream || !m.micAnalyser) return;
+  if (typeof MediaRecorder === "undefined") { console.warn("[stt+] MediaRecorder unsupported"); return; }
+  const mime = MediaRecorder.isTypeSupported("audio/webm;codecs=opus") ? "audio/webm;codecs=opus"
+             : MediaRecorder.isTypeSupported("audio/mp4") ? "audio/mp4" : "";
+  const buf = new Uint8Array(m.micAnalyser.fftSize);
+  let rec = null, chunks = [], segStart = 0, lastLoud = 0;
+  const level = () => {
+    m.micAnalyser.getByteTimeDomainData(buf);
+    let sum = 0;
+    for (let i = 0; i < buf.length; i++) { const v = (buf[i] - 128) / 128; sum += v * v; }
+    return Math.min(100, Math.sqrt(sum / buf.length) * 240);
+  };
+  const closeSeg = () => {
+    if (!rec) return;
+    const r = rec; rec = null;
+    try { r.stop(); } catch (e) {}
+  };
+  const openSeg = () => {
+    chunks = [];
+    let r;
+    try { r = new MediaRecorder(m.micStream, mime ? { mimeType: mime } : undefined); }
+    catch (e) { console.warn("[stt+] recorder open failed:", e.message); return; }
+    r.ondataavailable = (ev) => { if (ev.data && ev.data.size) chunks.push(ev.data); };
+    r.onstop = () => {
+      const ms = Date.now() - segStart;
+      const blob = new Blob(chunks, { type: r.mimeType || "audio/webm" });
+      chunks = [];
+      if (ms < STT_SEG_MIN_MS || blob.size < 2000) return;   // noise blip
+      postSegment(blob, ms);
+    };
+    try { r.start(); rec = r; segStart = Date.now(); }
+    catch (e) { console.warn("[stt+] recorder start failed:", e.message); }
+  };
+  async function postSegment(blob, ms) {
+    _sttInflight++;
+    try {
+      const res = await fetch("/api/stt", { method: "POST", headers: { "Content-Type": blob.type }, body: blob });
+      if (!res.ok) { console.warn("[stt+] /api/stt HTTP", res.status); return; }
+      const data = await res.json();
+      const text = ((data && data.text) || "").trim();
+      if (window.__clawdDebug) console.log(`%c[stt+] ${ms}ms →`, "color:#6cf", text || "(empty)");
+      if (text) handleFinalChunk(text);
+    } catch (e) {
+      console.warn("[stt+]", e.message);
+    } finally {
+      _sttInflight = Math.max(0, _sttInflight - 1);
+    }
+  }
+  setInterval(() => {
+    // The IN picker can reopen the mic; a recorder dies with its old stream.
+    if (rec && rec.stream !== m.micStream) closeSeg();
+    const lvl = level();
+    const now = Date.now();
+    if (lvl >= STT_SEG_START_PCT) lastLoud = now;
+    if (!rec) {
+      if (lvl >= STT_SEG_START_PCT) openSeg();
+    } else if (now - lastLoud > STT_SEG_STOP_MS || now - segStart > STT_SEG_MAX_MS) {
+      closeSeg();
+    }
+  }, 50);
+  console.log("%c[stt+] OpenAI STT upgrade ACTIVE — webkit finals suppressed, /api/stt supplies the transcript", "color:#34eeb6;font-weight:bold");
+}
+
+if (_sttUpgradeOn) {
+  // The meters open the mic asynchronously at boot — wait for the stream.
+  const _sttWait = setInterval(() => {
+    const m = window.__clawdMeters;
+    if (m && m.micStream && m.micAnalyser) { clearInterval(_sttWait); startSttUpgradeLoop(); }
+  }, 500);
 }
 
 // ── Pill state poller ─────────────────────────────────────────────────────

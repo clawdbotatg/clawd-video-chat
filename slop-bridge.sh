@@ -143,6 +143,10 @@ disown 2>/dev/null || true
 # ── 4. Server ────────────────────────────────────────────────────────────────
 if curl -sf -m 2 "$CLAWD_URL" >/dev/null; then
     say "Clawd server already up on $CLAWD_URL"
+    # New call on an already-running server: archive the previous call's STT
+    # transcript so stt-log.jsonl starts fresh (a fresh server.py boot does
+    # this rotation itself).
+    curl -sf -m 2 -X POST "$CLAWD_URL/api/stt-rotate" >/dev/null 2>&1 || true
 else
     say "Starting clawd server.py…"
     LOG="/tmp/clawd-server.log"
