@@ -195,6 +195,42 @@ async def run_claude(session_key, run_id, prompt, public, trusted=False):
         await broadcast_chat(run_id, session_key, state,
                              say_wrap(text, state == "final") if public else text)
 
+    # Live activity feed: the backchannel page already renders `agent` events
+    # (stream "tool" → collapsible tool cards, "thinking" → thinking card); the
+    # bridge just never emitted them. Forward tool_use / tool_result / thinking
+    # from the claude stream so the backchannel shows WHAT clawd is doing while
+    # a turn is open instead of a bare "working" pill.
+    seen_tools = set()
+
+    def _agent(data):
+        asyncio.run_coroutine_threadsafe(
+            broadcast_event("agent", {"runId": run_id, "sessionKey": session_key,
+                                      "stream": "tool", "data": data}), loop)
+
+    def _tool_starts(blocks):
+        for b in blocks:
+            if not (isinstance(b, dict) and b.get("type") == "tool_use"):
+                continue
+            tid = b.get("id")
+            if not tid or tid in seen_tools:
+                continue
+            seen_tools.add(tid)
+            _agent({"toolCallId": tid, "phase": "start",
+                    "name": b.get("name") or "tool", "input": b.get("input") or {}})
+
+    def _tool_results(blocks):
+        for b in blocks:
+            if not (isinstance(b, dict) and b.get("type") == "tool_result"):
+                continue
+            out = b.get("content")
+            if isinstance(out, list):
+                out = "\n".join(x.get("text", "") for x in out
+                                if isinstance(x, dict) and x.get("type") == "text")
+            if not isinstance(out, str):
+                out = "" if out is None else json.dumps(out)
+            _agent({"toolCallId": b.get("tool_use_id"), "phase": "result",
+                    "output": out[:600], "isError": bool(b.get("is_error"))})
+
     def on_event(evt):
         nonlocal text
         etype = evt.get("type")
@@ -205,12 +241,21 @@ async def run_claude(session_key, run_id, prompt, public, trusted=False):
                 if delta.get("type") == "text_delta" and delta.get("text"):
                     text += delta["text"]
                     asyncio.run_coroutine_threadsafe(emit("delta"), loop)
+                elif delta.get("type") == "thinking_delta" and delta.get("thinking"):
+                    asyncio.run_coroutine_threadsafe(
+                        broadcast_event("agent", {
+                            "runId": run_id, "sessionKey": session_key,
+                            "stream": "thinking",
+                            "data": {"text": delta["thinking"]}}), loop)
         elif etype == "assistant":
             blocks = (evt.get("message") or {}).get("content") or []
+            _tool_starts(blocks)
             full = "".join(b.get("text", "") for b in blocks if b.get("type") == "text")
             if len(full) > len(text):
                 text = full
                 asyncio.run_coroutine_threadsafe(emit("delta"), loop)
+        elif etype == "user":
+            _tool_results((evt.get("message") or {}).get("content") or [])
         elif etype == "result":
             if isinstance(evt.get("result"), str) and len(evt["result"]) > len(text):
                 text = evt["result"]

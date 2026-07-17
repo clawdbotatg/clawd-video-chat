@@ -6,7 +6,15 @@
 #   • OBS     does macOS Screen Capture of that Chrome window, virtual-cam
 #             feeds it out (audio muted in OBS — we route audio separately)
 #   • Chrome Canary hosts https://live.slop.computer/ — picks up OBS virtual
-#             cam for video and reads BlackHole 2ch for clawd's audio
+#             cam for video and reads BlackHole 16ch for clawd's audio
+#
+# SPLIT-CABLE AUDIO (two BlackHole devices, one per direction):
+#   • BlackHole 2ch  = remote voices → clawd's ear (Canary plays to it as the
+#     system default output; SR reads it as the system default input).
+#   • BlackHole 16ch = clawd's TTS → the call (clawd page OUT picker sinks to
+#     it; slop's in-site mic picker captures it).
+#   Collapsing both directions onto one cable makes SR transcribe clawd's own
+#   TTS → phone-mode barges in on himself. Keep them split.
 #
 # Why this specific pair of browsers:
 #   • Chrome (not Safari) for clawd because Safari has a getUserMedia bug
@@ -20,7 +28,9 @@
 #
 # What this script does, in order:
 #   1. Snapshot current macOS default in/out devices so we can restore them.
-#   2. Set system input + output → BlackHole 2ch.
+#   2. Unmute BlackHole 16ch (the TTS cable — macOS remembers per-device
+#      mute/volume forever; a muted cable = clawd silent for every app),
+#      then set system input + output → BlackHole 2ch.
 #   3. Start python3 server.py on port 7900 if not already running.
 #   4. Open a fresh Chrome window at clawd; capture its CGWindow ID.
 #   5. Patch the OBS scene so $OBS_SOURCE_NAME captures that Chrome window.
@@ -29,12 +39,13 @@
 #
 # What it intentionally does NOT do (one-time UI setup; browsers remember):
 #   • Grant Chrome mic permission for clawd — first-time prompt.
-#   • Pick "BlackHole 2ch" as the mic device in Chrome Canary's slop tab —
-#     do this once via 🔒 → site permissions → Microphone.
+#   • Pick "BlackHole 16ch" as the mic device INSIDE slop's own settings
+#     (it stores the exact deviceId in localStorage) — and set Canary's
+#     Manage-→-Microphone default to BlackHole 16ch as the fallback.
 #
 # Requires:
 #   • brew install switchaudio-osx
-#   • BlackHole 2ch
+#   • BlackHole 2ch + BlackHole 16ch (brew install blackhole-2ch blackhole-16ch)
 #   • Google Chrome Canary installed
 #   • OBS with a window-capture source named CLAWDSCREEN inside scene CLAWD
 #   • Screen Recording permission granted to whichever Terminal app you
@@ -48,6 +59,7 @@ SLOP_URL="https://live.slop.computer/clawdbotatg?invite=o6nYhKLvQAZiOoAk"
 
 SYS_INPUT_DEVICE="BlackHole 2ch"
 SYS_OUTPUT_DEVICE="BlackHole 2ch"
+TTS_CABLE="BlackHole 16ch"   # clawd's voice → the call's mic (split-cable rig)
 
 OBS_SCENE="$HOME/Library/Application Support/obs-studio/basic/scenes/Untitled.json"
 OBS_SOURCE_NAME="CLAWDSCREEN"
@@ -76,8 +88,23 @@ PREV_IN="$(SwitchAudioSource -c -t input)"
 say "Snapshot saved → $STATE_FILE (restore with ./slop-bridge-stop.sh)"
 
 # ── 3. Set audio defaults ────────────────────────────────────────────────────
+# First: unmute the TTS cable. macOS keeps volume/mute PER DEVICE forever, and
+# a muted $TTS_CABLE silences clawd for every app with zero visible symptom
+# (the 2026-07 "I can't hear him" bug — it sat at volume 8 + muted). osascript
+# only reaches the current default device, so hop onto it for a moment; we end
+# pinned on $SYS_OUTPUT_DEVICE either way.
+if grep -q "$TTS_CABLE" <<<"$DEVICES"; then
+    say "Unmuting TTS cable $TTS_CABLE (volume 100)"
+    SwitchAudioSource -t output -s "$TTS_CABLE" >/dev/null
+    osascript -e 'set volume output volume 100' -e 'set volume without output muted'
+else
+    warn "$TTS_CABLE not installed — TTS falls back onto $SYS_OUTPUT_DEVICE and clawd will hear himself (phone-mode self-barge). Fix: brew install blackhole-16ch"
+fi
 say "Setting system OUTPUT → $SYS_OUTPUT_DEVICE"
 SwitchAudioSource -t output -s "$SYS_OUTPUT_DEVICE"
+# Same per-device-mute trap on the remote-voices cable (volume left alone —
+# the barge/gate tuning was calibrated against its current level).
+osascript -e 'set volume without output muted'
 say "Setting system INPUT  → $SYS_INPUT_DEVICE"
 SwitchAudioSource -t input  -s "$SYS_INPUT_DEVICE"
 
@@ -91,7 +118,11 @@ WATCH_PIDFILE="$HOME/.cache/clawd/slop-bridge-watch.pid"
 # Kill any stale watcher from a prior run before starting a new one.
 if [ -f "$WATCH_PIDFILE" ]; then
     OLD_PID="$(cat "$WATCH_PIDFILE" 2>/dev/null || true)"
-    [ -n "$OLD_PID" ] && kill "$OLD_PID" 2>/dev/null || true
+    # Only kill if that PID is actually our watcher — after a reboot PIDs
+    # reset and a stale pidfile could point at an innocent process.
+    if [ -n "$OLD_PID" ] && ps -p "$OLD_PID" -o command= 2>/dev/null | grep -q "SwitchAudioSource"; then
+        kill "$OLD_PID" 2>/dev/null || true
+    fi
     rm -f "$WATCH_PIDFILE"
 fi
 say "Spawning audio-defaults watcher (out=$SYS_OUTPUT_DEVICE, in=$SYS_INPUT_DEVICE, every 2s)…"
@@ -333,19 +364,21 @@ cat <<EOF
 ──────────────────────────────────────────────────────────────────
 $(printf "\033[1;32m✓ bridge is up\033[0m")
 
-audio routing now in effect:
-  remote voices on slop → BlackHole 2ch → clawd's mic / SR
-  clawd's TTS           → BlackHole 2ch → slop's mic
+audio routing now in effect (split-cable — keep the directions apart):
+  remote voices on slop → BlackHole 2ch  → clawd's mic / SR
+  clawd's TTS           → BlackHole 16ch → slop's mic
 
 one-time per-browser setup (skip if already done):
-  • Chrome clawd tab        : grant mic permission on first prompt.
-  • Chrome Canary slop tab  : grant mic and pick \"BlackHole 2ch\" in the
-                              device picker, OR click 🔒 → site
-                              permissions → Microphone → BlackHole 2ch.
+  • Chrome clawd tab        : grant mic on first prompt; bottom-left OUT
+                              picker → BlackHole 16ch.
+  • Chrome Canary slop tab  : grant mic; pick \"BlackHole 16ch\" in slop's
+                              own mic picker (in-site settings), and set
+                              🔒 → Manage → Microphone → BlackHole 16ch
+                              as the fallback default.
 
 obs:
   • Scene CLAWD active, CLAWDSCREEN pointed at Chrome window $NEW_WID
-  • Virtual camera started (audio muted in OBS — audio routes via BH-2ch)
+  • Virtual camera started (audio muted in OBS — audio routes via BlackHole)
 
 teardown (restore prior system audio defaults):
   ./slop-bridge-stop.sh

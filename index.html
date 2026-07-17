@@ -845,15 +845,16 @@
     <div class="bar"><div class="bar-fill"></div></div>
   </div>
   <div class="routing">routing: …</div>
-  <!-- Device pickers — "auto" = current rig behavior (OUT → BlackHole 2ch if
-       present, IN → system default). A manual pick pins the device + persists,
-       so this page works on machines with normal mics/speakers. NOTE: speech
-       recognition always follows the OS default input (Chrome gives no API to
-       redirect it) — the IN pick moves the meters/energy stream only. -->
+  <!-- Device pickers — "auto" = split-cable rig behavior (OUT → BlackHole
+       16ch if present, else 2ch, else default; IN → system default). A manual
+       pick pins the device + persists, so this page works on machines with
+       normal mics/speakers. NOTE: speech recognition always follows the OS
+       default input (Chrome gives no API to redirect it) — the IN pick moves
+       the meters/energy stream only. -->
   <div class="devpick">
     <div class="row">
       <span class="lbl">OUT</span>
-      <select id="pick-out" title="TTS output device. auto = BlackHole 2ch if present, else system default."></select>
+      <select id="pick-out" title="TTS output device. auto = BlackHole 16ch if present (the TTS cable — keep it OFF the SR cable or clawd hears himself), else 2ch, else system default."></select>
     </div>
     <div class="row">
       <span class="lbl">IN</span>
@@ -2464,6 +2465,7 @@ function handleChatEvent(payload) {
     if (t.tickerId) clearInterval(t.tickerId);
     t.footerEl.innerHTML = "";
     tab.activeRunId = null;
+    _voiceInitiatedRuns.delete(runId);
     removePendingByRunId(tab, runId);
     resolveTabRunCompletion(tab, runId, null);
     tab.turnCount = (tab.turnCount || 0) + 1;
@@ -2500,6 +2502,7 @@ function handleChatEvent(payload) {
     ttsReset();
     t.footerEl.innerHTML = `<div style="color:var(--warn); font-size:12px">⏹ aborted</div>`;
     tab.activeRunId = null;
+    _voiceInitiatedRuns.delete(runId);
     removePendingByRunId(tab, runId);
     resolveTabRunCompletion(tab, runId, "aborted");
   } else if (chatState === "error") {
@@ -2507,6 +2510,7 @@ function handleChatEvent(payload) {
     ttsReset();   // stop any audio on error too
     t.footerEl.innerHTML = `<div style="color:var(--bad); font-size:12px">⚠ ${errorMessage || "error"}</div>`;
     tab.activeRunId = null;
+    _voiceInitiatedRuns.delete(runId);
     removePendingByRunId(tab, runId);
     resolveTabRunCompletion(tab, runId, errorMessage || "error");
   }
@@ -2534,7 +2538,11 @@ function handleAgentEvent(payload) {
     const phase = data?.phase;
     if (phase === "start") {
       const baseName = data?.name || data?.toolName || "tool";
-      clawdVid.building(baseName);
+      // The building clips all alias chatting_1.mp4 in this clip library, so
+      // "working" reads as TALKING on camera. A quiet turn must sit there
+      // silently — visually too — and a backchannel-initiated run is PRIVATE:
+      // neither gets the talking clip while tools run.
+      if (!_quietTurn && _voiceInitiatedRuns.has(runId)) clawdVid.building(baseName);
       if (!t.toolCards.has(callId)) {
         const argPreview = data?.args?.command || data?.args?.path || data?.args?.url;
         const title = argPreview ? `${baseName}: ${String(argPreview).slice(0, 60)}` : baseName;
@@ -2544,7 +2552,9 @@ function handleAgentEvent(payload) {
       // Have Haiku narrate the tool call, casually, while it's running —
       // unless he's reading his own brain (clawd-md / CLAUDE.md), in which
       // case just emit a short thinking sound (no narration of the path).
-      if (_ttsEnabled && tab === currentTab() && !_ttsRealArrived && _fillerLastToolId !== callId) {
+      // A quiet turn narrates NOTHING — the user asked for silence. And only
+      // narrate runs THIS page sent: a backchannel-initiated run is PRIVATE.
+      if (_ttsEnabled && !_quietTurn && _voiceInitiatedRuns.has(runId) && tab === currentTab() && !_ttsRealArrived && _fillerLastToolId !== callId) {
         _fillerLastToolId = callId;
         const inputObj = data?.args || data?.input;
         if (isBrainFileRead(baseName, inputObj)) {
@@ -2577,7 +2587,9 @@ function handleAgentEvent(payload) {
       // Narrate the reasoning out loud. Coalesce rapid deltas into one
       // Haiku call: append to a buffer, fire either when the buffer crosses
       // ~200 chars or 1.2s after the last delta, whichever comes first.
-      if (_ttsEnabled && tab === currentTab() && !_ttsRealArrived) {
+      // A quiet turn narrates NOTHING — the user asked for silence. And only
+      // narrate runs THIS page sent: a backchannel-initiated run is PRIVATE.
+      if (_ttsEnabled && !_quietTurn && _voiceInitiatedRuns.has(runId) && tab === currentTab() && !_ttsRealArrived) {
         const newPart = text.slice(_fillerLastThinkingLen);
         if (newPart) {
           _fillerLastThinkingLen = text.length;
@@ -3089,6 +3101,10 @@ async function onSend(opts = {}) {
   // keepTts (phone mode) skips this: submitPhoneTurn already reset + queued an
   // instant opener that must keep playing while the brain spins up.
   if (!opts.keepTts) ttsReset();
+  // Quiet turn? The user's own words asked for silence while working —
+  // mute all process speech (ack/tool/thinking filler) for this turn.
+  _quietTurn = QUIET_ASK_RE.test(text);
+  if (_quietTurn) console.log("%c[clawd] quiet turn — process speech muted", "color:#888", text);
   // Estimate input tokens from the message about to be sent. This is what
   // the WS frame carries (transcript context + user question). If we later
   // see real `usage` data we'll switch the chip into exact mode.
@@ -3103,12 +3119,19 @@ async function onSend(opts = {}) {
   // keepTts (phone mode) means submitPhoneTurn already fired the instant opener —
   // don't stack a second ack on top of it.
   if (_ttsEnabled && !opts.keepTts && !shouldSkipAck(text)) {
-    openAckWindow();
-    fillerSpeak({
-      kind: "ack",
-      lastUser: text,
-      history: fillerHistorySnapshot(tab, 3),
-    });
+    if (_quietTurn) {
+      // Told to work quietly: one terse fixed ack (no Haiku hop — a HARD-tier
+      // ack would mirror the ask right back out loud), then nothing until the
+      // final answer.
+      if (_ttsMode !== "browser") ttsEnqueue(_QUIET_ACKS[Math.floor(Math.random() * _QUIET_ACKS.length)], "ack");
+    } else {
+      openAckWindow();
+      fillerSpeak({
+        kind: "ack",
+        lastUser: text,
+        history: fillerHistorySnapshot(tab, 3),
+      });
+    }
   }
 
   scrollToBottom(true);
@@ -3145,6 +3168,7 @@ async function onSend(opts = {}) {
     });
     if (res?.runId) {
       tab.activeRunId = res.runId;
+      _voiceInitiatedRuns.add(res.runId);
       setPendingRunId(tab, pendingId, res.runId);
       updateSendButton();
     }
@@ -3258,6 +3282,25 @@ let _ttsResolveCurrent = null; // resolves the in-flight playback promise (for r
 // during it; the window closes when the ack lands (or 2.5s timeout) and
 // buffered real flushes through immediately. Tool/thinking narration is
 // droppable — dies as soon as real arrives.
+// Quiet-turn gate: the user asked clawd to work SILENTLY this turn ("quietly
+// read the transcript…", "shut up while you do it", "research this to
+// yourself"). While set, ALL process speech is suppressed — no Haiku ack, no
+// tool/thinking narration, no phone opener — except one terse fixed ack so
+// it's clear he heard. The FINAL answer still speaks. Set per-turn from the
+// user's own words in onSend()/submitPhoneTurn(); the brain-side twin of this
+// rule lives in prompts/voice*.md (zero interim text on a quiet ask — the
+// bridge [SAY]-wraps every streamed char, so brain narration is spoken too).
+let _quietTurn = false;
+const QUIET_ASK_RE = /\b(quiet|silent)(ly)?\b|\bhush\b|\bin\s+silence\b|\bshut\s+(the\s+\S+\s+)?up\b|\b(don'?t|do\s+not|without|no)\s+(say|talk|speak|narrat)\w*|\bto\s+yourself\b|\bkeep\s+it\s+down\b/i;
+const _QUIET_ACKS = ["On it.", "Got it.", "Yep."];
+
+// Runs THIS page sent (voice turns). Agent tool/thinking events broadcast for
+// ALL runs on the shared session — including backchannel-initiated (PRIVATE)
+// ones, whose replies never feed TTS, so _ttsRealArrived stays false and the
+// filler would happily narrate a private turn's every tool call out loud.
+// Only narrate runs we initiated; private turns stay private.
+const _voiceInitiatedRuns = new Set();
+
 let _ttsRealArrived = false;        // first "real" chunk enqueued — drops pending tool/thinking
 let _ttsRealAudioStarted = false;   // first "real" chunk actually started playing
 let _ackWindowOpen = false;         // while true, real ttsFeed() calls are deferred
@@ -3886,9 +3929,10 @@ const PHONE_BARGE_FRAMES = 8;      // ~130ms sustained (at ~60fps) before we cal
 const PHONE_SR_BARGE_TOKENS = 2;
 
 // ── Dedicated barge mic ────────────────────────────────────────────────────
-// The page's SR + level meter listen to the SYSTEM DEFAULT input, which on this
-// rig is BlackHole — the virtual device that also carries clawd's OWN TTS. That's
-// the "he hears himself" echo, and it's why the user's real voice reads faint.
+// The page's SR + level meter listen to the SYSTEM DEFAULT input (BlackHole
+// 2ch). On the split-cable rig (2026-07) TTS goes out on 16ch, so 2ch no
+// longer carries clawd's own voice — but on a collapsed one-cable rig it did
+// ("he hears himself"), and the user's real voice always reads faint there.
 // For barge detection we open a SECOND mic stream pinned to the REAL microphone
 // (a non-BlackHole input), with Chrome's echo cancellation on. On headphones that
 // mic never hears clawd at all, so plain sustained energy = the user talking over
@@ -3905,7 +3949,9 @@ let _bargeWarm = 0;                // frames elapsed in the current TTS chunk (b
 let _bargeDbgTick = 0;             // throttle for the __bargeDebug log
 
 // ── Self-echo cancellation (content-based) ─────────────────────────────────
-// The call's audio rig loops clawd's own TTS back into the mic (TTS → BlackHole
+// BACKSTOP since the 2026-07 split-cable rig (TTS → 16ch, SR ← 2ch) removed
+// the loop at the source — keep it for one-cable rigs / regressions.
+// A collapsed rig loops clawd's own TTS back into the mic (TTS → BlackHole
 // 2ch = the recognizer's input), and Web Speech finalizes those words SECONDS
 // after they were spoken — long after the time-based inEchoWindow() gate has
 // closed. So clawd's last answer leaks in as "user" speech, gets seeded into the
@@ -4305,7 +4351,9 @@ async function submitPhoneTurn() {
   // moment it returns, its real speech queued right behind the opener. If it
   // vetoes (you were thinking aloud / talking to someone else) → cut the opener.
   ttsReset();                 // clear any residue from the previous turn
-  phoneOpener();              // instant "hmm" — masks the gate + brain spin-up
+  // Quiet ask ("quietly look that up…") → no opener either; shut up means shut up.
+  _quietTurn = QUIET_ASK_RE.test(utterance);
+  if (!_quietTurn) phoneOpener();   // instant "hmm" — masks the gate + brain spin-up
   setPillState("thinking", "…");
 
   _phoneGating = true;
@@ -4918,6 +4966,8 @@ try {
     else if (e.data === "ptt-down") pttDown();
     else if (e.data === "ptt-up") pttUp();
     else if (e.data === "toggle-phone") setPhoneMode(!_phoneMode);         // backchannel control button
+    else if (e.data === "phone-on") setPhoneMode(true);                    // deterministic set (meet talk)
+    else if (e.data === "phone-off") setPhoneMode(false);                  // deterministic set (meet hush)
     else if (e.data === "toggle-trusted") setFullAccess(!state.fullAccess); // backchannel control button
     else if (e.data === "stop") {
       // PANIC STOP relayed from the backchannel /stop (POST /trigger-stop).
@@ -5278,11 +5328,13 @@ setInterval(() => fetchSessionStats({ countCost: false }), 7000);
     }
     tick();
     console.log("%c[clawd] audio meters online", "color:#34eeb6", "mic:", !!meters.micAnalyser, "spk: true");
-    // BlackHole bridge: if BlackHole 2ch exists as an output device, route
-    // the AudioContext destination to it so TTS lands in BlackHole 2ch
-    // (which slop.computer reads as its mic). Without this, TTS goes to
-    // the system default — likely BlackHole 16ch in this setup — and we'd
-    // feedback into clawd's own mic.
+    // BlackHole bridge (split-cable rig): route the AudioContext destination
+    // to BlackHole 16ch so TTS lands on the cable slop/Meet capture as their
+    // mic. The OTHER cable (BlackHole 2ch = system default in/out) carries
+    // remote voices → SR. Without the split, TTS lands on the same cable SR
+    // reads and clawd hears himself (phone mode barges in on his own voice).
+    // Gotcha: macOS keeps per-device mute forever — a muted 16ch = clawd
+    // silent everywhere; slop-bridge.sh unmutes it at bring-up.
     await setupBlackHoleBridge();
     setupDevicePickers();
   }
@@ -5306,17 +5358,21 @@ setInterval(() => fetchSessionStats({ countCost: false }), 7000);
     try {
       const devices = await navigator.mediaDevices.enumerateDevices();
       const outs   = devices.filter(d => d.kind === "audiooutput");
-      const bh2Out = outs.find(d => /blackhole\s*2ch/i.test(d.label));
-      const bh16In = devices.find(d => d.kind === "audioinput"  && /blackhole\s*16ch/i.test(d.label));
+      // Split-cable: TTS out on 16ch, SR/remote voices on 2ch. auto prefers
+      // 16ch so a cleared pick can't collapse both directions onto one cable
+      // (self-echo loop); 2ch is the single-cable fallback for rigs without it.
+      const bhOut = outs.find(d => /blackhole\s*16ch/i.test(d.label))
+                 || outs.find(d => /blackhole\s*2ch/i.test(d.label));
+      const bh2In = devices.find(d => d.kind === "audioinput" && /blackhole\s*2ch/i.test(d.label));
 
-      // Output: a manual OUT pick wins; auto = BlackHole 2ch if present.
+      // Output: a manual OUT pick wins; auto = BlackHole 16ch → 2ch.
       const outPick = resolveDevicePick("out", outs);
       const inPick  = resolveDevicePick("in", devices.filter(d => d.kind === "audioinput"));
-      const target = outPick || bh2Out;
-      const targetName = outPick ? (outPick.label || "picked device") : "BlackHole 2ch";
+      const target = outPick || bhOut;
+      const targetName = outPick ? (outPick.label || "picked device") : (bhOut ? bhOut.label : "BlackHole");
       let outLabel = getDevicePick("out") && !outPick
         ? "picked device missing → default"
-        : "default (no BlackHole 2ch found)";
+        : "default (no BlackHole found)";
       let outOk = false;
       if (target && meters.ctx) {
         try {
@@ -5349,9 +5405,11 @@ setInterval(() => fetchSessionStats({ countCost: false }), 7000);
       // can't override it via JS — if mic track label says BlackHole 16ch
       // but SR still fails, that's the SR-on-virtual-device problem.
       let inLabel = meters.activeMicLabel || "(unknown)";
+      // Auto-IN healthy state = BlackHole 2ch (the remote-voices cable SR
+      // reads). 16ch here would mean clawd is listening to his own TTS cable.
       const inOk = inPick ? inLabel === inPick.label
-                          : /blackhole\s*16ch/i.test(inLabel);
-      if (!inOk && !inPick && bh16In) inLabel += `  (avail: BlackHole 16ch)`;
+                          : /blackhole\s*2ch/i.test(inLabel);
+      if (!inOk && !inPick && bh2In) inLabel += `  (avail: BlackHole 2ch)`;
 
       const oCls = outOk ? "ok" : "warn";
       const iCls = inOk ? "ok" : "warn";
@@ -5394,7 +5452,7 @@ setInterval(() => fetchSessionStats({ countCost: false }), 7000);
         $sel.innerHTML = "";
         const auto = document.createElement("option");
         auto.value = "";
-        auto.textContent = kind === "out" ? "auto (BlackHole 2ch → default)" : "auto (system default)";
+        auto.textContent = kind === "out" ? "auto (BlackHole 16ch → 2ch → default)" : "auto (system default)";
         $sel.appendChild(auto);
         for (const d of list) {
           const o = document.createElement("option");

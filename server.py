@@ -552,14 +552,21 @@ class Handler(BaseHTTPRequestHandler):
         elif path in ("/trigger-phone", "/trigger-trusted"):
             # Backchannel control buttons: relay an SSE toggle to the voice page,
             # which flips phone-call mode / full-access. Cross-origin no-cors POST,
-            # so mirror /trigger-stop's CORS.
+            # so mirror /trigger-stop's CORS. /trigger-phone also accepts a JSON
+            # body {"on": true|false} for a deterministic set instead of a toggle
+            # (`meet talk`/`meet hush` use this — an agent can't see the page, so
+            # a blind toggle could land on the wrong state).
+            body = {}
             try:
                 length = int(self.headers.get("Content-Length", 0))
                 if length:
-                    self.rfile.read(length)
+                    body = json.loads(self.rfile.read(length) or b"{}")
             except Exception:
-                pass
-            push_event("toggle-phone" if path.endswith("phone") else "toggle-trusted")
+                body = {}
+            if path.endswith("phone") and isinstance(body, dict) and isinstance(body.get("on"), bool):
+                push_event("phone-on" if body["on"] else "phone-off")
+            else:
+                push_event("toggle-phone" if path.endswith("phone") else "toggle-trusted")
             self.send_response(200)
             self.send_header("Access-Control-Allow-Origin", "*")
             self.send_header("Content-Type", "application/json")

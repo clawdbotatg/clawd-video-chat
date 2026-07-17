@@ -19,7 +19,9 @@ die()  { printf "\n\033[1;31m✗ %s\033[0m\n" "$*" >&2; exit 1; }
 # ── 0. Kill the audio-defaults watcher first ────────────────────────────────
 if [ -f "$WATCH_PIDFILE" ]; then
     PID="$(cat "$WATCH_PIDFILE" 2>/dev/null || true)"
-    if [ -n "$PID" ]; then
+    # Guard: only kill if the PID is really our watcher (PIDs reset on reboot;
+    # a stale pidfile could point at an innocent process).
+    if [ -n "$PID" ] && ps -p "$PID" -o command= 2>/dev/null | grep -q "SwitchAudioSource"; then
         say "Killing audio-defaults watcher (PID $PID)"
         kill "$PID" 2>/dev/null || true
     fi

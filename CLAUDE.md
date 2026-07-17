@@ -111,14 +111,17 @@ based browsers) honor the device choice correctly.
 
 Why **Chrome Canary** for slop? Canary is a separate app/process from
 stable Chrome, so the AEC link is broken, but it's still Chromium — so
-slop's mic-device picker reliably opens BlackHole 2ch just like Chrome.
-(Brave works equally well here for the same reason and was the prior
-setup; the current desktop rig uses Chrome Canary.)
+slop's mic-device picker reliably opens the BlackHole device just like
+Chrome. (Brave works equally well here for the same reason and was the
+prior setup; the current desktop rig uses Chrome Canary.)
 
 ## Audio topology (what each cable carries)
 
-Current desktop rig: **system input AND output are both BlackHole 2ch**
-(each at full volume), pinned there by `slop-bridge.sh`'s watcher.
+**Split-cable rig (2026-07): two BlackHole devices, one per direction.**
+BlackHole **2ch** = remote voices → clawd's ear (system default in AND out,
+pinned by `slop-bridge.sh`'s watcher). BlackHole **16ch** = clawd's TTS →
+the call. Never collapse both directions onto one cable: SR then transcribes
+clawd's own TTS and phone mode barges in on himself (the pre-2026-07 rig).
 
 ```
 remote voices on slop (other computer)
@@ -126,18 +129,28 @@ remote voices on slop (other computer)
   → clawd's getUserMedia → mic meter
   → clawd's webkitSpeechRecognition (uses system default input
     = BlackHole 2ch) → SR meter → wake-word match → onSend
-  → TTS chunks → routed via AudioContext.setSinkId(BlackHole 2ch)
-  → Chrome Canary's slop tab mic input (set to BlackHole 2ch in site
-    permissions) → broadcast to remote participants
+  → TTS chunks → routed via AudioContext.setSinkId(BlackHole 16ch)
+  → Chrome Canary's slop tab mic input (BlackHole 16ch, picked inside
+    slop's own settings → localStorage `slop-pref-mic-id`; Canary's
+    Manage→Microphone default is also 16ch as fallback)
+  → broadcast to remote participants
 ```
+
+**Per-device mute trap:** macOS remembers volume/mute PER DEVICE forever. A
+muted BlackHole 16ch silences clawd for every app with no visible symptom
+(found 2026-07-17 at volume 8 + muted — likely why the rig had collapsed to
+one cable). `slop-bridge.sh` now unmutes it on every bring-up. Test a cable
+end-to-end from the shell:
+`ffmpeg -f avfoundation -i ":<idx>" -t 3 x.wav & say -a "BlackHole 16ch" test`
+then check `astats` RMS (−inf = dead cable).
 
 OBS captures the **clawd-video-chat Chrome window** as the slop camera
 feed; OBS audio is muted (audio routes through BlackHole, not OBS).
 
 ## Prereqs / one-time setup
 
-- BlackHole 2ch installed (`brew install blackhole-2ch`). (16ch is no
-  longer used by the current desktop rig — both in/out are 2ch.)
+- BlackHole 2ch **and** 16ch installed (`brew install blackhole-2ch
+  blackhole-16ch`) — one cable per direction (see Audio topology).
 - `brew install switchaudio-osx`.
 - OBS configured with:
   - Scene named `CLAWD`
@@ -146,8 +159,11 @@ feed; OBS audio is muted (audio routes through BlackHole, not OBS).
   `slop-bridge.sh` from (the script uses a swift snippet to enumerate
   CGWindows; macOS gates this on Screen Recording perms).
 - One-time per-browser:
-  - Chrome first-launch of clawd: allow mic when prompted (mic = BlackHole 2ch).
-  - Chrome Canary first-launch of slop: allow mic → device picker → **BlackHole 2ch**.
+  - Chrome first-launch of clawd: allow mic when prompted (mic = BlackHole
+    2ch); OUT picker auto-prefers BlackHole 16ch.
+  - Chrome Canary first-launch of slop: allow mic → pick **BlackHole 16ch**
+    in slop's in-site mic picker, and set 🔒 → Manage → Microphone →
+    BlackHole 16ch as the fallback default.
 - In OBS: audio should be **muted** on the virtual cam output (we route
   audio through BlackHole, not through OBS).
 
@@ -156,12 +172,15 @@ feed; OBS audio is muted (audio routes through BlackHole, not OBS).
 In OBS mode (default) the page shows three meters bottom-left:
 - **🎤 MIC** — raw `getUserMedia` analyser level off BlackHole 2ch.
 - **🗣️ SR** — pulses each time `webkitSpeechRecognition` fires `onresult`.
-- **🔊 OUT** — raw analyser level off the TTS audio routed to BlackHole 2ch.
+- **🔊 OUT** — raw analyser level off the TTS audio routed to BlackHole 16ch.
 
 Plus a `routing:` line under them showing the actual `OUT →` sink and
-`IN ←` track label. Known-good reads `OUT → BlackHole 2ch` and
+`IN ←` track label. Known-good reads `OUT → BlackHole 16ch` and
 `IN ← BlackHole 2ch (Virtual)`. If `IN` says anything else, the system
-default input was changed (re-run `slop-bridge.sh`).
+default input was changed (re-run `slop-bridge.sh`). If `OUT` says 2ch,
+the split collapsed — expect self-barging in phone mode. **Loop signature:**
+the SR bar blazing while clawd himself is speaking = he's hearing his own
+TTS (wrong cable somewhere).
 
 If MIC moves but SR stays dark, SR is broken on whatever device is the
 current default input — check Sound settings, then restart the browser
