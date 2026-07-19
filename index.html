@@ -871,7 +871,7 @@
 <!-- Phone-call mode badge — bottom-center, just above the lock. Lit (green) only
      while Shift+P continuous-conversation mode is active; invisible otherwise so
      a clean stream isn't cluttered. -->
-<div id="phone-badge" role="button" tabindex="0" title="Tap to toggle phone-call mode (Shift+P)">📞 phone call</div>
+<div id="phone-badge" role="button" tabindex="0" title="Tap to toggle off (Shift+P = phone, Shift+G = group)">📞 phone call</div>
 
 <!-- Multi-mic scanner (Shift+M) — a live level bar for EVERY input device, so
      you can SEE which mic actually moves when you talk (vs which carries clawd's
@@ -3966,6 +3966,26 @@ const PHONE_BARGE_FRAMES = 8;      // ~130ms sustained (at ~60fps) before we cal
 // window.__srBargeTokens (lower = more eager to stop; raise if he stops himself).
 const PHONE_SR_BARGE_TOKENS = 2;
 
+// ── Group-call mode (Shift+G) ──────────────────────────────────────────────
+// Phone mode's listening machinery with the OPPOSITE social contract: clawd is
+// one quiet participant among many, so the default outcome of every turn is
+// SILENCE. The gate (mode:"group" on /api/should-respond) sees the room
+// transcript, leans quiet, and FAILS quiet; openers only play when he's
+// directly addressed; and unaddressed interjections are budgeted by a hard
+// cooldown in code — there's no algorithm for when a human should talk, so the
+// LLM makes the judgment call and the code just caps its known bias toward
+// talking. See GROUP-CALL.md. Rides _phoneMode for SR arming/silence turns:
+// group ON implies phone ON; only submitPhoneTurn branches.
+let _groupMode = (() => { try { return sessionStorage.getItem("clawd.groupMode") === "1"; } catch (e) { return false; } })();
+const GROUP_COOLDOWN_MS = 4 * 60 * 1000;  // min gap between UNADDRESSED interjections (live-tune: window.__groupCooldownMs)
+let _lastInterjectTs = 0;                 // when clawd last spoke unprompted (group mode)
+// Bare-name mention ("clawd could do that") — not a wake phrase (WAKE_RE needs
+// the okay/so/hey prefix) but in a group it's the "they're talking about him"
+// signal the gate weighs, and it bypasses the interjection cooldown. Same
+// mis-hearing list as WAKE_RE MINUS the common real words (cloud, clot) that
+// only stay safe behind a wake prefix.
+const NAME_RE = /\b(claude|clawd|claud|clad|clyde|clod|klaus|claus|clawed|clawde|glaude)s?\b/i;
+
 // ── Dedicated barge mic ────────────────────────────────────────────────────
 // The page's SR + level meter listen to the SYSTEM DEFAULT input (BlackHole
 // 2ch). On the split-cable rig (2026-07) TTS goes out on 16ch, so 2ch no
@@ -4394,6 +4414,8 @@ async function submitPhoneTurn() {
   const _words = raw.split(/\s+/);
   const utterance = _words.length > VOICE_WORD_CAP ? _words.slice(-VOICE_WORD_CAP).join(" ") : raw;
 
+  if (_groupMode) return submitGroupTurn(utterance);
+
   // Latency play: fire an INSTANT opener now (a thinking sound, no LLM hop) so
   // clawd makes a human sound ~200ms after you stop, and run the gate in
   // PARALLEL underneath it. If the gate says respond → the brain kicks off the
@@ -4428,6 +4450,90 @@ async function submitPhoneTurn() {
   autosize($input);
   setPillState("thinking", "thinking…");
   onSend({ interrupt: true, keepTts: true });
+}
+
+// Group-mode turn: the inverse of the phone path (see GROUP-CALL.md). No
+// opener (silence is the default outcome), the gate leans QUIET and fails
+// quiet, and only a direct address ("okay clawd …") skips the gate entirely —
+// that case must never be lost to a flaky LLM. Unaddressed "speak" verdicts
+// are additionally rate-limited by GROUP_COOLDOWN_MS, enforced HERE in code
+// (the gate is told about the cooldown, but doesn't get to override it).
+async function submitGroupTurn(utterance) {
+  const addressed = WAKE_RE.test(utterance);
+  const mentioned = !addressed && NAME_RE.test(utterance);
+  if (addressed) {
+    // He was called on — respond like a phone turn, opener and all (a "hmm"
+    // is natural when you've just been asked something).
+    ttsReset();
+    _quietTurn = QUIET_ASK_RE.test(utterance);
+    if (!_quietTurn) phoneOpener();
+    bcLog("gate", `👥 addressed — "${utterance}"`);
+    logStt({ wake: true, sent: utterance });
+    $input.value = utterance;
+    autosize($input);
+    setPillState("thinking", "thinking…");
+    onSend({ interrupt: true, keepTts: true });
+    return;
+  }
+  _phoneGating = true;
+  let verdict = "quiet", reason = "";
+  try {
+    const g = await groupGate(utterance, mentioned);
+    verdict = g.verdict; reason = g.reason;
+  } catch (e) { reason = "gate error"; }   // fail QUIET — the inverse of phone mode
+  _phoneGating = false;
+  if (_wakeArmed) return;   // a new turn started while we deliberated — stale verdict
+  const coolMs = window.__groupCooldownMs || GROUP_COOLDOWN_MS;
+  if (verdict === "speak" && !mentioned && _lastInterjectTs && Date.now() - _lastInterjectTs < coolMs) {
+    bcLog("gate", `👥⏳ held by cooldown — "${utterance}" (${reason})`);
+    verdict = "quiet";
+  }
+  if (verdict === "note") {
+    // v1: just surface the moment (tuning data). v1.2 wires this into a
+    // quiet-turn research run so he's ready when someone finally asks.
+    bcLog("gate", `👥📝 noted — "${utterance}" (${reason})`);
+    return;
+  }
+  if (verdict !== "speak") {
+    bcLog("gate", `👥🤫 quiet — "${utterance}"${reason ? ` (${reason})` : ""}`);
+    if (!_ttsAudio) setPillState("listening", "in the group — listening…");
+    return;
+  }
+  // Interjecting unprompted (or his name came up). Spend the budget, and let
+  // the brain be the FINAL gate: it's told it may stay silent by replying
+  // without [SAY], so a gate false-positive costs tokens, not room noise.
+  _lastInterjectTs = Date.now();
+  bcLog("gate", `👥💬 interject — "${utterance}" (${reason})`);
+  logStt({ wake: true, sent: utterance });
+  const framing = mentioned
+    ? `[GROUP CALL — your name came up, but no one addressed you directly. Overheard: "${utterance}"]`
+    : `[GROUP CALL — you were NOT addressed. Overheard: "${utterance}"]`;
+  $input.value = `${framing} If you have ONE genuinely valuable, short contribution (a sentence or two), say it in [SAY]. If not, reply without [SAY] and stay silent — silence is the right call more often than not.`;
+  autosize($input);
+  setPillState("thinking", "…");
+  onSend({ interrupt: true });
+}
+
+// Ask the group gate (mode:"group" flips /api/should-respond into its inverted-
+// bias twin — room-transcript context, lean quiet). Unlike shouldRespond(),
+// every failure path returns "quiet": in a group, silence is the safe error.
+async function groupGate(utterance, mentioned) {
+  const coolMs = window.__groupCooldownMs || GROUP_COOLDOWN_MS;
+  const res = await fetch("/api/should-respond", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      utterance,
+      mode: "group",
+      mentioned,
+      minsSinceSpoke: _lastInterjectTs ? Math.round((Date.now() - _lastInterjectTs) / 60000) : null,
+      cooldown: !!_lastInterjectTs && Date.now() - _lastInterjectTs < coolMs,
+    }),
+  });
+  if (!res.ok) return { verdict: "quiet", reason: `HTTP ${res.status}` };
+  const j = await res.json().catch(() => ({}));
+  const v = String(j.verdict || "").toLowerCase();
+  return { verdict: (v === "speak" || v === "note") ? v : "quiet", reason: j.reason || "" };
 }
 
 // Instant, LLM-free opener for phone mode: TTS a short thinking sound straight
@@ -4924,11 +5030,17 @@ window.addEventListener("keydown", (e) => {
 // it; sessionStorage keeps it across a live-reload, not a tab restart.
 const $phoneBadge = document.getElementById("phone-badge");
 function renderPhoneBadge() {
-  if ($phoneBadge) $phoneBadge.classList.toggle("on", _phoneMode);
+  if (!$phoneBadge) return;
+  $phoneBadge.classList.toggle("on", _phoneMode || _groupMode);
+  $phoneBadge.textContent = _groupMode ? "👥 group call" : "📞 phone call";
 }
 function setPhoneMode(on) {
   _phoneMode = !!on;
-  try { sessionStorage.setItem("clawd.phoneMode", on ? "1" : "0"); } catch (e) {}
+  _groupMode = false;   // plain phone mode; group has its own setter below
+  try {
+    sessionStorage.setItem("clawd.phoneMode", on ? "1" : "0");
+    sessionStorage.setItem("clawd.groupMode", "0");
+  } catch (e) {}
   // Reset capture state on every flip so a half-armed turn never carries across.
   _wakeArmed = false; _wakeBuf = ""; _liveInterim = ""; _phoneGating = false;
   clearTimeout(_silenceTimer);
@@ -4938,10 +5050,32 @@ function setPhoneMode(on) {
   console.log("%c[phone] mode " + (_phoneMode ? "ON" : "off"), "color:#34eeb6;font-weight:bold");
   bcLog("phone", _phoneMode ? "📞 phone mode ON" : "📴 phone mode off");
 }
+// Group-call mode rides phone mode's machinery (continuous SR + silence
+// turns); only the submit path differs (submitGroupTurn). So ON = both flags.
+function setGroupMode(on) {
+  _groupMode = !!on;
+  _phoneMode = !!on;
+  try {
+    sessionStorage.setItem("clawd.groupMode", on ? "1" : "0");
+    sessionStorage.setItem("clawd.phoneMode", on ? "1" : "0");
+  } catch (e) {}
+  _wakeArmed = false; _wakeBuf = ""; _liveInterim = ""; _phoneGating = false;
+  clearTimeout(_silenceTimer);
+  _lastSubmitTs = Date.now();
+  renderPhoneBadge();
+  setPillState("listening", on ? "in the group — listening…" : 'listening for "okay/so claude"');
+  console.log("%c[group] mode " + (on ? "ON" : "off"), "color:#34eeb6;font-weight:bold");
+  bcLog("phone", on ? "👥 group mode ON — mostly listening" : "👥 group mode off");
+}
 window.addEventListener("keydown", (e) => {
   if (e.key !== "P" || !e.shiftKey || e.metaKey || e.ctrlKey) return;
   if (e.target && /^(INPUT|TEXTAREA)$/.test(e.target.tagName)) return;
   setPhoneMode(!_phoneMode);
+});
+window.addEventListener("keydown", (e) => {
+  if (e.key !== "G" || !e.shiftKey || e.metaKey || e.ctrlKey) return;
+  if (e.target && /^(INPUT|TEXTAREA)$/.test(e.target.tagName)) return;
+  setGroupMode(!_groupMode);
 });
 // Shift+S = "shush": instantly stop clawd talking + abort his run. A guaranteed
 // manual barge-in (the auto energy/SR detection is best-effort on a noisy rig).
@@ -5120,6 +5254,9 @@ try {
     else if (e.data === "toggle-phone") setPhoneMode(!_phoneMode);         // backchannel control button
     else if (e.data === "phone-on") setPhoneMode(true);                    // deterministic set (meet talk)
     else if (e.data === "phone-off") setPhoneMode(false);                  // deterministic set (meet hush)
+    else if (e.data === "toggle-group") setGroupMode(!_groupMode);         // group-call mode (GROUP-CALL.md)
+    else if (e.data === "group-on") setGroupMode(true);
+    else if (e.data === "group-off") setGroupMode(false);
     else if (e.data === "toggle-trusted") setFullAccess(!state.fullAccess); // backchannel control button
     else if (e.data === "stop") {
       // PANIC STOP relayed from the backchannel /stop (POST /trigger-stop).

@@ -1,4 +1,14 @@
-# Group-call mode — design (not built yet)
+# Group-call mode — design + v1
+
+**Status: v1 is BUILT (2026-07-17).** Shift+G on the voice page (or POST
+`/trigger-phone {"mode":"group","on":true}`) turns it on — the badge reads
+"👥 group call". Server side is the `mode:"group"` branch of
+`/api/should-respond` (`_group_gate` in server.py); page side is
+`submitGroupTurn` + `groupGate` in index.html. **:7900 must be restarted once
+to load the server half** (page half arrives on reload). Watch every verdict
+live in the backchannel debug feed (`👥🤫 quiet` / `👥📝 noted` /
+`👥💬 interject` / `👥⏳ held by cooldown` / `👥 addressed`) — that feed is the
+tuning loop. v1.1 (lull timer) and v1.2 (note → research runs) are not built.
 
 The third listening mode, after wake-word and phone. Clawd sits on a
 multi-person call, hears everything, and *can* speak — but almost never does.
@@ -11,6 +21,75 @@ Design premise (from Austin): **Claude thinks he's far more important to a
 conversation than he is.** Left to a prompt alone he will interject constantly.
 So restraint here is enforced by *code* (defaults, budgets, cooldowns), with the
 prompt only shaping judgment inside those hard limits.
+
+## The north star, and the subtle tensions under it
+
+**The goal is presence, not silence.** Clawd should feel like part of the
+conversation — a colleague who's clearly *in the room* — without answering
+everything. Mute-recorder is failure just like chatterbox is failure. The whole
+feature lives in the narrow band between them, and every design choice below is
+a trade along one of these tensions. None of them fully resolve; they get
+*tuned*, on real calls, over time.
+
+**1. There is no algorithm for when humans talk.** (Austin's core pushback.)
+People read a gestalt — who's talking, energy, whether a thought landed,
+whether the floor is open. You cannot write that as rules, and trying produces
+something robotic. So the *judgment* lives in the gate model, holistically,
+with as much room context as we can feed it. But —
+
+**2. — the model's judgment is biased, so code must cap it.** Claude reliably
+overestimates how much a group wants to hear from him. A prompt alone will not
+hold. Resolution: the LLM decides *whether this is a moment*; deterministic
+code decides *whether he's allowed another unprompted moment yet* (cooldown),
+*which way failures fall* (quiet), and *what plays before the gate returns*
+(nothing, unless addressed). The mechanics are a speed limiter, not a driving
+algorithm — if the cooldown is doing the talking-decision work day-to-day, the
+gate prompt is mistuned.
+
+**3. Knowing the answer is not an invitation.** The strongest wrong instinct:
+"they're discussing X, I know about X, therefore speak." A human expert sits
+through whole meetings about their specialty. Value is necessary but not
+sufficient — what makes an interjection welcome is value *plus an open floor*
+(a question nobody's answering, a stuck moment, a lull). Content says "could
+speak"; timing says "may speak." This is why the lull timer (v1.1) matters:
+the beat of waiting IS the social skill.
+
+**4. Quiet is not idle — readiness is a form of presence.** The `note` verdict
+exists because listening should accumulate: research what they're stuck on,
+remember what was decided, hold the answer. When someone finally says "clawd,
+did you catch any of that?" and he has it *instantly and specifically*, that's
+the moment he feels like he was part of the conversation all along — earned
+during the silence, not the speaking.
+
+**5. Fail-safe direction flips with the social contract — except when
+addressed.** Phone mode fails LOUD (going silent mid-1:1 breaks the call);
+group mode fails QUIET (an unwanted interruption costs more than a missed
+chance). But a direct address is a 1:1 moment inside the group — "hey clawd,
+takeaways?" answered with silence is the worst outcome the feature can produce.
+Hence the deterministic Tier-0: addressed turns never touch the fallible path
+at all.
+
+**6. Talked *to*, talked *about*, and neither.** Being mentioned ("clawd could
+probably look that up") isn't an address, but responding to it is deeply human
+— you perk up at your name. It gets a lower bar (bypasses the cooldown, gate
+leans in) without the guarantees of a direct address. With no diarization,
+this whole distinction rests on wording alone — the gate's hardest reads live
+here, and it will sometimes be wrong in both directions.
+
+**7. An interjection must land in ITS moment.** Group conversation moves;
+by the time a gate verdict + brain run + TTS arrives, the topic may have too.
+A perfect answer to the thing from forty seconds ago reads as robotic — worse
+than silence. Stale-verdict drops, short interjections ("one contribution,
+then yield"), and yield-on-overlap all serve the same principle: match the
+room's rhythm or stay out of it.
+
+**8. This will be tuned, not solved.** The feel we're after is subtle and the
+first prompt will be wrong in ways only real calls reveal. The instruments:
+the backchannel debug feed (every verdict + one-line reason, live), the stt-log
+(every real call becomes a replayable eval set for candidate prompts), and one
+number — unsolicited interjections per hour (target < ~2). Iterate the gate
+prompt against recordings; move a mechanic into code only when the model
+proves it can't hold the line itself.
 
 ## Why phone mode can't just be reused
 

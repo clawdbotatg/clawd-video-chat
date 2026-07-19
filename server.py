@@ -607,10 +607,16 @@ class Handler(BaseHTTPRequestHandler):
                     body = json.loads(self.rfile.read(length) or b"{}")
             except Exception:
                 body = {}
-            if path.endswith("phone") and isinstance(body, dict) and isinstance(body.get("on"), bool):
-                push_event("phone-on" if body["on"] else "phone-off")
+            if path.endswith("phone") and isinstance(body, dict):
+                # {"mode":"group"} targets group-call mode instead of phone mode
+                # (same deterministic-set / toggle semantics).
+                kind = "group" if body.get("mode") == "group" else "phone"
+                if isinstance(body.get("on"), bool):
+                    push_event(f"{kind}-on" if body["on"] else f"{kind}-off")
+                else:
+                    push_event(f"toggle-{kind}")
             else:
-                push_event("toggle-phone" if path.endswith("phone") else "toggle-trusted")
+                push_event("toggle-trusted")
             self.send_response(200)
             self.send_header("Access-Control-Allow-Origin", "*")
             self.send_header("Content-Type", "application/json")
@@ -867,6 +873,9 @@ class Handler(BaseHTTPRequestHandler):
         if not utterance:
             self.send_json({"respond": False, "reason": "empty"})
             return
+        if body.get("mode") == "group":
+            self._group_gate(body, utterance)
+            return
         history = body.get("history") or []
         convo = []
         for h in history[-8:]:
@@ -928,6 +937,110 @@ class Handler(BaseHTTPRequestHandler):
             low = cleaned.lower()
             respond = not (low.startswith("no") or low == "false" or "respond: no" in low)
         self.send_json({"respond": respond, "reason": reason or cleaned[:80]})
+
+    def _group_gate(self, body, utterance):
+        """Group-call turn gate — the INVERSE bias of the phone gate (see
+        GROUP-CALL.md). On a multi-person call clawd is one quiet participant
+        among many, so QUIET is the default, unsure → quiet, and ANY error →
+        quiet (in a group, speaking is the unsafe failure; the page handles
+        direct address deterministically and never reaches this gate with it).
+
+        Context is the ROOM, not the brain: the phone gate's chat-history
+        snapshot only contains turns that reached the brain, which in group
+        mode is almost nothing — so this gate reads the last slice of the STT
+        firehose (stt-log.jsonl) server-side instead.
+
+        Body: {utterance, mode:"group", mentioned?: bool,
+               minsSinceSpoke?: int|null, cooldown?: bool}.
+        Returns {respond: bool, verdict: "speak"|"quiet"|"note", reason}.
+        "note" = don't speak, but the moment is worth quiet background work
+        (v1 just logs it; wiring to a quiet-turn brain run is v1.2).
+        """
+        mentioned = bool(body.get("mentioned"))
+        mins = body.get("minsSinceSpoke")
+        cooldown = bool(body.get("cooldown"))
+
+        lines = []
+        try:
+            for r in load_stt_rows()[-25:]:
+                t = (r.get("t") or "")[11:16]
+                if r.get("wake"):
+                    lines.append(f"[{t}] (clawd was asked) {r.get('sent', '')}")
+                else:
+                    lines.append(f"[{t}] {r.get('text', '')}")
+        except Exception:
+            pass
+        room = "\n".join(lines) if lines else "(no transcript yet)"
+
+        system = (
+            "You are the social turn-taking judgment of a voice AI ('clawd') "
+            "sitting in a MULTI-PERSON group call. He is a peripheral "
+            "participant: a considerate, slightly reserved colleague who stays "
+            "quiet the overwhelming majority of the time. There is no formula "
+            "for when a human speaks up — use judgment, and know that AI "
+            "assistants consistently overestimate how much a group wants to "
+            "hear from them. The transcript is everyone's speech mixed into "
+            "one mic-derived stream: no speaker labels, possibly garbled — "
+            "never treat garble or crosstalk as an invitation.\n\n"
+            "Verdicts:\n"
+            '- "speak": someone asked clawd something or is clearly talking '
+            "about him and a brief chime-in is natural; OR the group is "
+            "plainly stuck, the floor is open, and clawd has a concrete "
+            "high-value answer.\n"
+            '- "note": not a moment to talk, but something was said worth '
+            "quietly researching or remembering so he's ready if asked later.\n"
+            '- "quiet": everything else. A topic clawd knows about is NOT a '
+            "reason to speak. A discussion between others is theirs.\n\n"
+            "When unsure → quiet. Reply STRICT JSON only: "
+            '{"verdict": "speak"|"quiet"|"note", "reason": "<a few words>"}'
+        )
+        status_bits = []
+        if mentioned:
+            status_bits.append("clawd's name came up in this latest turn")
+        if mins is not None:
+            status_bits.append(f"clawd last spoke unprompted ~{mins} min ago")
+        if cooldown:
+            status_bits.append("he interjected recently — the bar for speaking "
+                               "unprompted again is even higher")
+        status = ("Status: " + "; ".join(status_bits) + ".\n\n") if status_bits else ""
+        user_msg = (
+            f"Room transcript (most recent last):\n{room}\n\n"
+            f"{status}They just said: \"{utterance}\"\n\n"
+            "Should clawd speak now, quietly take note, or stay quiet?"
+        )
+        try:
+            raw = _llm_chat_with_fallback(
+                messages=[
+                    {"role": "system", "content": system},
+                    {"role": "user", "content": user_msg},
+                ],
+                max_tokens=60,
+                bankr_model="claude-haiku-4.5",
+                venice_model="llama-3.3-70b",
+                anthropic_model="claude-haiku-4-5-20251001",
+                timeout=6,
+                temperature=0,
+            )
+        except Exception as e:
+            self.send_json({"respond": False, "verdict": "quiet",
+                            "reason": f"gate error: {e}"})
+            return
+
+        import re
+        cleaned = re.sub(r"<think>.*?</think>", "", raw or "", flags=re.DOTALL).strip()
+        verdict, reason = "quiet", ""
+        m = re.search(r"\{.*\}", cleaned, re.DOTALL)
+        if m:
+            try:
+                j = json.loads(m.group(0))
+                v = str(j.get("verdict", "")).strip().lower()
+                if v in ("speak", "quiet", "note"):
+                    verdict = v
+                reason = str(j.get("reason", ""))[:80]
+            except Exception:
+                pass  # malformed → quiet (inverted failsafe)
+        self.send_json({"respond": verdict == "speak", "verdict": verdict,
+                        "reason": reason or cleaned[:80]})
 
     # ── Per-meeting transcript endpoints ────────────────────────────────────
     def handle_meeting_start(self):
