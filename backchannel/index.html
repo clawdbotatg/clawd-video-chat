@@ -1345,9 +1345,22 @@ function mountVoiceCtl() {
   // (pairs with /new when starting a genuinely new conversation). Momentary
   // action, so just flash the button instead of tracking on/off state.
   const roll = mk("vc-roll", "🎬 roll log", "api/stt-rotate");
+  // Counter: how many utterances the CURRENT log holds — "🎬 roll (247)".
+  // Readable cross-origin (send_json sends ACAO:*); falls back to a plain
+  // label when the voice page is down. Refreshed on a poll and right after
+  // a roll so the reset to (0) is visible.
+  async function refreshRollCount() {
+    try {
+      const r = await fetch(`${location.protocol}//${location.hostname}:7900/api/stt-count${voiceQS()}`);
+      const j = await r.json();
+      roll.textContent = `🎬 roll (${j.lines})`;
+    } catch (e) { roll.textContent = "🎬 roll log"; }
+  }
+  refreshRollCount();
+  setInterval(refreshRollCount, 15000);
   roll.addEventListener("click", () => {
     roll.classList.add("on");
-    setTimeout(() => roll.classList.remove("on"), 500);
+    setTimeout(() => { roll.classList.remove("on"); refreshRollCount(); }, 600);
   });
   document.body.appendChild(wrap);
 }

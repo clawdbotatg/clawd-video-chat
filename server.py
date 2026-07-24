@@ -461,6 +461,21 @@ class Handler(BaseHTTPRequestHandler):
             self.handle_session_stats()
         elif path == "/health":
             self.send_json({"status": "ok"})
+        elif path == "/api/stt-count":
+            # Size of the CURRENT stt-log (utterances heard since the last
+            # roll), for the backchannel's 🎬 roll-log button counter.
+            # send_json's ACAO:* makes it readable cross-origin.
+            utterances = 0
+            size = 0
+            try:
+                size = os.path.getsize(STT_LOG_PATH)
+                with open(STT_LOG_PATH, encoding="utf-8") as f:
+                    for line in f:
+                        if line.strip() and '"wake"' not in line:
+                            utterances += 1
+            except OSError:
+                pass
+            self.send_json({"lines": utterances, "bytes": size})
         elif path == "/api/meeting/status":
             self.handle_meeting_status()
         elif path == "/api/meeting/list":
