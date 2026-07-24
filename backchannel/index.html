@@ -152,7 +152,9 @@
   }
   #voiceCtl button:active { transform: scale(0.96); }
   #voiceCtl button.vc-phone.on { background: rgba(52,238,182,0.9); color: #04211a; border-color: rgba(52,238,182,0.5); }
+  #voiceCtl button.vc-group.on { background: rgba(240,160,64,0.9); color: #1a1208; border-color: rgba(240,160,64,0.5); }
   #voiceCtl button.vc-trust.on { background: rgba(204,43,43,0.9); color: #fff; border-color: var(--voice); }
+  #voiceCtl button.vc-roll.on { background: rgba(120,160,255,0.9); color: #0a1030; border-color: rgba(120,160,255,0.5); }
 
   /* live process: thinking + tool cards inside an assistant turn */
   .msg.assistant .thinking, .msg.assistant .tools { display: flex; flex-direction: column; gap: 6px; }
@@ -1270,9 +1272,21 @@ function renderNote(text) {
 // chatty feed doesn't drown the chat.
 let _lastDbg = "";
 function renderDebug(kind, msg) {
-  // Let the phone/full-access control buttons reflect the live state reported by
-  // the voice page (setPhoneMode / setFullAccess emit these).
-  if (kind === "phone") setVoiceCtlState("vc-phone", /ON/.test(msg));
+  // Let the phone/group/full-access control buttons reflect the live state
+  // reported by the voice page. Both mode setters emit kind "phone"; group
+  // messages carry 👥. The modes are mutually exclusive (setPhoneMode clears
+  // group and vice versa), so an ON for one clears the other's highlight, and
+  // any OFF clears both.
+  if (kind === "phone") {
+    const on = /ON/.test(msg);
+    if (/👥/.test(msg)) {
+      setVoiceCtlState("vc-group", on);
+      setVoiceCtlState("vc-phone", false);
+    } else {
+      setVoiceCtlState("vc-phone", on);
+      setVoiceCtlState("vc-group", false);   // phone ON or OFF both exit group
+    }
+  }
   else if (kind === "trusted") setVoiceCtlState("vc-trust", /ON/.test(msg));
   const key = kind + "|" + msg;
   if (key === _lastDbg) return;        // collapse identical repeats (e.g. level snapshots)
@@ -1300,10 +1314,13 @@ function voiceQS() {
   const k = new URLSearchParams(location.search).get("k");
   return k ? `?k=${encodeURIComponent(k)}` : "";
 }
-function voiceTrigger(path) {
+function voiceTrigger(path, body) {
   try {
+    // no-cors restricts Content-Type to safelisted values, so the JSON body
+    // rides as text/plain — the voice server json.loads the raw bytes anyway.
     fetch(`${location.protocol}//${location.hostname}:7900/${path}${voiceQS()}`,
-          { method: "POST", mode: "no-cors", keepalive: true });
+          { method: "POST", mode: "no-cors", keepalive: true,
+            body: body ? JSON.stringify(body) : undefined });
   } catch (e) { /* voice page may be down; ignore */ }
 }
 function setVoiceCtlState(cls, on) {
@@ -1313,16 +1330,25 @@ function setVoiceCtlState(cls, on) {
 function mountVoiceCtl() {
   const wrap = document.createElement("div");
   wrap.id = "voiceCtl";
-  const mk = (cls, label, path) => {
+  const mk = (cls, label, path, body) => {
     const b = document.createElement("button");
     b.className = cls;
     b.textContent = label;
-    b.addEventListener("click", () => voiceTrigger(path));
+    b.addEventListener("click", () => voiceTrigger(path, body));
     wrap.appendChild(b);
     return b;
   };
   mk("vc-phone", "📞 phone", "trigger-phone");
+  mk("vc-group", "👥 group", "trigger-phone", { mode: "group" });
   mk("vc-trust", "🔓 trust", "trigger-trusted");
+  // Roll the stt-log: archives the current room transcript and starts fresh
+  // (pairs with /new when starting a genuinely new conversation). Momentary
+  // action, so just flash the button instead of tracking on/off state.
+  const roll = mk("vc-roll", "🎬 roll log", "api/stt-rotate");
+  roll.addEventListener("click", () => {
+    roll.classList.add("on");
+    setTimeout(() => roll.classList.remove("on"), 500);
+  });
   document.body.appendChild(wrap);
 }
 

@@ -89,6 +89,102 @@ def _add_dirs():
 
 PRIVATE_PREFIX = "[PRIVATE]"
 
+# --- Room-delta injection ---------------------------------------------------
+# The voice page streams every word heard in the room to :7900's stt-log
+# (server.py handle_stt_log). A wake turn hands the brain only the few seconds
+# around the wake word, so answering "what do you think about that?" used to
+# cost a `stt tail` round-trip mid-call — and repeated tails re-delivered
+# overlapping windows into the one fluid session. Instead: keep a per-
+# conversation CURSOR into the log and prepend the unseen slice to each turn's
+# prompt. Each transcript line enters the session at most once; nothing runs
+# between turns; older history stays reachable via the `stt` helper.
+STT_LOG = os.path.expanduser(os.environ.get(
+    "STT_LOG_PATH", "~/clawd/clawd-harness/projects/claude-p-agent/stt-log.jsonl"))
+STT_DELTA_ENABLED = os.environ.get("CC_STT_DELTA", "1") != "0"
+STT_DELTA_LINES = int(os.environ.get("CC_STT_DELTA_LINES", "30"))
+STT_DELTA_MAX_AGE = int(os.environ.get("CC_STT_DELTA_MAX_AGE_S", "900"))
+_CURSOR_DIR = os.path.expanduser("~/.cache/clawd")
+
+
+def _cursor_path(session_key):
+    slug = "".join(c if c.isalnum() else "-" for c in session_key)
+    return os.path.join(_CURSOR_DIR, f"stt-cursor-{slug}.json")
+
+
+def _read_cursor(session_key):
+    try:
+        with open(_cursor_path(session_key), encoding="utf-8") as f:
+            return int(json.load(f).get("offset", 0))
+    except Exception:
+        return 0
+
+
+def _write_cursor(session_key, offset):
+    # Persisted so a bridge restart doesn't re-deliver the whole recent log.
+    try:
+        os.makedirs(_CURSOR_DIR, exist_ok=True)
+        with open(_cursor_path(session_key), "w", encoding="utf-8") as f:
+            json.dump({"offset": offset, "ts": int(time.time())}, f)
+    except Exception:
+        pass
+
+
+def room_delta(session_key):
+    """Room transcript the brain hasn't seen: stt-log lines appended since this
+    conversation's last turn, as a prompt block ("" if nothing new). Advances
+    the cursor past everything it read — lines skipped as stale or over the cap
+    are forfeited to `stt` search rather than queued, so no line is delivered
+    twice."""
+    if not STT_DELTA_ENABLED:
+        return ""
+    try:
+        size = os.path.getsize(STT_LOG)
+    except OSError:
+        return ""
+    offset = _read_cursor(session_key)
+    if offset > size:      # log rotated aside (server.py boot/api rotation)
+        offset = 0
+    if offset >= size:
+        return ""
+    try:
+        with open(STT_LOG, encoding="utf-8") as f:
+            f.seek(offset)
+            chunk = f.read()
+    except OSError:
+        return ""
+    # Advance only past complete lines — a line mid-append is left for next turn.
+    end = chunk.rfind("\n")
+    if end < 0:
+        return ""
+    _write_cursor(session_key, offset + len(chunk[:end + 1].encode("utf-8")))
+    now = time.time()
+    rows = []
+    for line in chunk[:end].splitlines():
+        try:
+            r = json.loads(line)
+        except Exception:
+            continue
+        if r.get("wake"):      # wake markers = turns the brain already received
+            continue
+        text = (r.get("text") or "").strip()
+        if not text:
+            continue
+        t = r.get("t", "")
+        try:
+            if now - time.mktime(time.strptime(t, "%Y-%m-%d %H:%M:%S")) > STT_DELTA_MAX_AGE:
+                continue       # stale (e.g. leftovers from an earlier call)
+        except Exception:
+            pass               # unparsable timestamp → keep the line
+        rows.append(f"[{t[-8:] or '--:--:--'}] {text}")
+    if not rows:
+        return ""
+    if len(rows) > STT_DELTA_LINES:
+        omitted = len(rows) - STT_DELTA_LINES
+        rows = rows[-STT_DELTA_LINES:]
+        rows.insert(0, f"(… {omitted} earlier lines omitted — use `stt` to search further back)")
+    return ("[ROOM — heard on the call since your last turn; mic-derived, may be garbled]\n"
+            + "\n".join(rows) + "\n[/ROOM]\n\n")
+
 # Full observability: every input (voice/backchannel) and every reply is logged
 # here so the conversation can be watched/debugged with `tail -f`.
 CONVO_LOG = os.environ.get("CC_BRIDGE_CONVO_LOG", "/tmp/cc-bridge-convo.log")
@@ -410,6 +506,11 @@ async def handle_req(ws, frame):
             trusted = public and bool(params.get("trusted"))
             convo_log("IN ", ("voice+" if trusted else "voice") if public else "priv",
                       session_key, message)
+            delta = room_delta(session_key)
+            if delta:
+                convo_log("ROOM", "ctx", session_key,
+                          f"injected {delta.count(chr(10)) - 3} unseen room lines")
+                prompt = delta + prompt
             asyncio.create_task(run_claude(session_key, run_id, prompt, public, trusted))
     else:
         await ok({})
