@@ -4452,6 +4452,23 @@ async function submitPhoneTurn() {
   onSend({ interrupt: true, keepTts: true });
 }
 
+// "Answer now" (backchannel ⚡ button): someone in the room asked clawd
+// something but nothing triggered him — missed wake word, gate said quiet,
+// garbled STT. Austin's press means "the question is already in the
+// transcript — go." Instant opener noise fills the dead air immediately;
+// the brain turn rides with the unseen room slice (cc-bridge auto-attaches
+// the [ROOM] delta) and is told to find the question and answer it out loud.
+function answerNow() {
+  bcLog("answer", "⚡ answer-now — reading the room and answering");
+  ttsReset();
+  phoneOpener();   // instant noise while the brain spins up
+  logStt({ wake: true, sent: "[answer-now]" });
+  $input.value = "[ANSWER NOW — Austin hit the answer-now button. Someone in the room just asked you something (or expects you to weigh in) but nothing triggered you. The recent room transcript is attached above this message; if the question isn't there, run stt tail 20. Find the most recent question or moment aimed at you and answer it OUT LOUD — tight and specific, a few sentences.]";
+  autosize($input);
+  setPillState("thinking", "answering…");
+  onSend({ interrupt: true, keepTts: true });
+}
+
 // Group-mode turn: the inverse of the phone path (see GROUP-CALL.md). No
 // opener (silence is the default outcome), the gate leans QUIET and fails
 // quiet, and only a direct address ("okay clawd …") skips the gate entirely —
@@ -5254,6 +5271,7 @@ try {
     else if (e.data === "toggle-phone") setPhoneMode(!_phoneMode);         // backchannel control button
     else if (e.data === "phone-on") setPhoneMode(true);                    // deterministic set (meet talk)
     else if (e.data === "phone-off") setPhoneMode(false);                  // deterministic set (meet hush)
+    else if (e.data === "answer-now") answerNow();                         // backchannel ⚡ button
     else if (e.data === "toggle-group") setGroupMode(!_groupMode);         // group-call mode (GROUP-CALL.md)
     else if (e.data === "group-on") setGroupMode(true);
     else if (e.data === "group-off") setGroupMode(false);

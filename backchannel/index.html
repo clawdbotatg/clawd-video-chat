@@ -334,9 +334,10 @@
     flex: 0 0 auto;
     padding: 8px 12px 0;
     background: var(--bg-soft);
+    display: flex; gap: 8px;
   }
   #ptt {
-    width: 100%;
+    flex: 1 1 auto;
     height: 48px;
     background: var(--bg); color: var(--voice);
     border: 1px solid var(--voice); border-radius: 12px;
@@ -348,6 +349,19 @@
   #ptt.held {
     background: var(--voice); color: #1a1208;
     box-shadow: 0 0 0 4px color-mix(in srgb, var(--voice) 30%, transparent);
+  }
+  /* ⚡ answer now — a missed question is in the transcript; make him answer it */
+  #answerNow {
+    flex: 0 0 auto; width: 92px; height: 48px;
+    background: var(--bg); color: rgb(52,238,182);
+    border: 1px solid rgba(52,238,182,0.6); border-radius: 12px;
+    font-size: 13px; font-weight: 600; font-family: inherit; line-height: 1.2;
+    cursor: pointer; user-select: none; -webkit-user-select: none;
+    transition: background 0.08s, color 0.08s;
+  }
+  #answerNow.held {
+    background: rgb(52,238,182); color: #04211a;
+    box-shadow: 0 0 0 4px rgba(52,238,182,0.3);
   }
 
   .err { color: var(--bad); font-size: 13px; padding: 10px 14px; background: rgba(232,90,90,0.08); border-top: 1px solid rgba(232,90,90,0.3); }
@@ -374,6 +388,7 @@
   </div>
   <div id="pttbar">
     <button id="ptt" type="button">🎙 hold to talk (or numpad ".") — clawd listens to the room</button>
+    <button id="answerNow" type="button" title="he missed a question — read the room transcript and answer it out loud">⚡ answer now</button>
   </div>
   <div id="composer">
     <textarea id="input" rows="1" placeholder="type — sent privately" autocomplete="off" autocorrect="on" autocapitalize="sentences" spellcheck="true"></textarea>
@@ -1545,6 +1560,17 @@ $ptt.addEventListener("pointerdown", pttPress);
 $ptt.addEventListener("pointerup", pttRelease);
 $ptt.addEventListener("pointercancel", pttRelease);
 $ptt.addEventListener("pointerleave", pttRelease);   // finger/mouse slides off while held → treat as release
+
+// ⚡ answer now — a question for clawd is already in the room transcript but
+// nothing triggered him. One tap: the voice page fires an instant opener
+// noise and a brain turn that reads the attached room delta and answers
+// out loud. Simple tap (not hold); flash to confirm the trigger went out.
+const $answerNow = document.getElementById("answerNow");
+$answerNow.addEventListener("click", () => {
+  voiceTrigger("trigger-answer-now");
+  $answerNow.classList.add("held");
+  setTimeout(() => $answerNow.classList.remove("held"), 600);
+});
 // Belt-and-suspenders: if the tab loses focus mid-hold, release so we don't
 // leave the voice page stuck capturing forever.
 window.addEventListener("blur", () => pttRelease());

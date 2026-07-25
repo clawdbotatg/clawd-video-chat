@@ -563,6 +563,15 @@ class Handler(BaseHTTPRequestHandler):
             self.rfile.read(length)
             push_event("toggle-mic")
             self.send_json({"ok": True})
+        elif path == "/trigger-answer-now":
+            # Backchannel ⚡ button: a question for clawd is already sitting in
+            # the room transcript but nothing triggered him (missed wake, gate
+            # said quiet). The page fires an instant opener and a brain turn
+            # that reads the attached room delta and answers out loud.
+            length = int(self.headers.get("Content-Length", 0))
+            self.rfile.read(length)
+            push_event("answer-now")
+            self.send_json({"ok": True})
         elif path == "/trigger-toggle-view":
             length = int(self.headers.get("Content-Length", 0))
             self.rfile.read(length)
