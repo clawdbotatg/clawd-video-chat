@@ -85,6 +85,13 @@ load_dotenv()
 STT_LOG_PATH = os.path.expanduser(
     os.environ.get("STT_LOG_PATH", "~/clawd/clawd-harness/projects/claude-p-agent/stt-log.jsonl"))
 
+# Silence gap (seconds) that marks an episode boundary: if the next heard line
+# arrives more than this long after the log's last write, the previous episode
+# is archived first so every call/episode gets its own file. Complements the
+# boot + slop-bridge.sh rotations, which miss a new call starting against a
+# server that never went down.
+STT_EPISODE_GAP = int(os.environ.get("STT_EPISODE_GAP", "2700"))
+
 
 def rotate_stt_log(reason="boot"):
     """Give each call session its own transcript: archive the previous
@@ -734,6 +741,13 @@ class Handler(BaseHTTPRequestHandler):
             rec["text"] = text
         try:
             os.makedirs(os.path.dirname(STT_LOG_PATH), exist_ok=True)
+            try:
+                if (os.path.exists(STT_LOG_PATH)
+                        and os.path.getsize(STT_LOG_PATH) > 0
+                        and time.time() - os.path.getmtime(STT_LOG_PATH) > STT_EPISODE_GAP):
+                    rotate_stt_log("episode-gap")
+            except Exception:
+                pass
             line = json.dumps(rec, ensure_ascii=False) + "\n"
             with open(STT_LOG_PATH, "a", encoding="utf-8") as f:
                 f.write(line)
