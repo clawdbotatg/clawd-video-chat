@@ -220,14 +220,24 @@ def _new_identity():
 _PLATFORM = "web"        # matches client.platform in _connect_params
 _DEVICE_FAMILY = ""      # client sends none → gateway normalizes to "" → match
 
+# Older gateways (PROTOCOL_VERSION=3, e.g. openclaw 2026.2.x) predate the v3
+# payload: they verify ["v2", deviceId, clientId, clientMode, role, scopes,
+# signedAtMs, token, nonce].join("|") — no platform/deviceFamily. Set
+# OPENCLAW_PROTOCOL=3 in .env to target one; default 4 = current scheme.
+_PROTO = int(os.environ.get("OPENCLAW_PROTOCOL", "4"))
+
 
 def _sign_device(identity, token, nonce):
     priv, device_id, public_key = identity
     scopes = ["operator.read", "operator.write", "operator.admin"]
     signed_at = int(time.time() * 1000)
-    parts = ["v3", device_id, "openclaw-control-ui", "ui", "operator",
-             ",".join(scopes), str(signed_at), token or "", nonce,
-             _PLATFORM, _DEVICE_FAMILY]
+    if _PROTO < 4:
+        parts = ["v2", device_id, "openclaw-control-ui", "ui", "operator",
+                 ",".join(scopes), str(signed_at), token or "", nonce]
+    else:
+        parts = ["v3", device_id, "openclaw-control-ui", "ui", "operator",
+                 ",".join(scopes), str(signed_at), token or "", nonce,
+                 _PLATFORM, _DEVICE_FAMILY]
     sig = priv.sign("|".join(parts).encode())
     return {"id": device_id, "publicKey": public_key,
             "signature": _b64url(sig), "signedAt": signed_at, "nonce": nonce}
@@ -235,7 +245,7 @@ def _sign_device(identity, token, nonce):
 
 def _connect_params(identity, token, nonce):
     p = {
-        "minProtocol": 4, "maxProtocol": 4,
+        "minProtocol": _PROTO, "maxProtocol": _PROTO,
         "client": {"id": "openclaw-control-ui", "displayName": "clawd-backchannel",
                    "version": "0.1.0", "platform": "web", "mode": "ui"},
         "role": "operator",
