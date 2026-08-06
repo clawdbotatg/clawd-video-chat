@@ -186,6 +186,19 @@ If MIC moves but SR stays dark, SR is broken on whatever device is the
 current default input — check Sound settings, then restart the browser
 running clawd (SR caches the device per browser-process).
 
+**⚠ SR DEAF banner** (red, under the routing line): `checkSrEar` polls the
+OS default mic every 20s and fires when it isn't BlackHole 2ch — SR and the
+ambient transcript follow the *system default input*, so a wrong default
+(classically: 16ch, clawd's own TTS cable) means he's deaf even though the
+call sounds fine. This happened live 2026-08-05 via an uncommitted
+`slop-bridge.sh` edit that pinned the default input to 16ch "so Zoom hears
+clawd" — **never do that**; Zoom/Meet must pick 16ch in their own mic
+settings instead (see the `SYS_INPUT_DEVICE` comment in `slop-bridge.sh`).
+Live fix, no tab reload needed:
+`kill $(cat ~/.cache/clawd/slop-bridge-watch.pid)` (the 2s watcher re-pins
+the device, so it must die first), then
+`SwitchAudioSource -t input -s "BlackHole 2ch"`.
+
 Press **Shift+D** anywhere in the page to dump full state to the
 JavaScript console.
 
