@@ -12,7 +12,9 @@
 #   • BlackHole 2ch  = remote voices → clawd's ear (Canary plays to it as the
 #     system default output; SR reads it as the system default input).
 #   • BlackHole 16ch = clawd's TTS → the call (clawd page OUT picker sinks to
-#     it; slop's in-site mic picker captures it).
+#     it; slop's in-site mic picker captures it). Apps that need to hear clawd
+#     (Zoom/Meet) must pick BlackHole 16ch in THEIR OWN mic settings — never
+#     by making 16ch the system default input (see SYS_INPUT_DEVICE below).
 #   Collapsing both directions onto one cable makes SR transcribe clawd's own
 #   TTS → phone-mode barges in on himself. Keep them split.
 #
@@ -57,7 +59,14 @@ CLAWD_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CLAWD_URL="http://127.0.0.1:7900/"
 SLOP_URL="https://live.slop.computer/clawdbotatg?invite=o6nYhKLvQAZiOoAk"
 
-SYS_INPUT_DEVICE="BlackHole 2ch"
+SYS_INPUT_DEVICE="BlackHole 2ch"    # clawd's EAR. Must stay 2ch: webkitSpeechRecognition
+                                    # always follows the OS default mic and cannot be
+                                    # re-pointed from JS. Setting this to 16ch (tried
+                                    # 2026-07-28 so Zoom/Meet default-mic would hear clawd)
+                                    # makes SR listen to clawd's own TTS cable = fully deaf
+                                    # once the ?stt=openai recorder dies on a tab reload
+                                    # (2026-08-05 live-call incident). Apps that need to
+                                    # hear clawd pick 16ch in their own mic settings.
 SYS_OUTPUT_DEVICE="BlackHole 2ch"
 TTS_CABLE="BlackHole 16ch"   # clawd's voice → the call's mic (split-cable rig)
 
@@ -268,9 +277,22 @@ if hit is None:
         print(f"note: source '{source_name}' not found; using screen_capture "
               f"source '{hit.get('name')}' instead", file=sys.stderr)
     elif len(caps) > 1:
-        names = [s.get("name") for s in caps]
-        sys.exit(f"source '{source_name}' not found and multiple screen_capture "
-                 f"sources exist ({names}) — rename one to {source_name!r}")
+        # Multiple screen captures exist (e.g. an unrelated game capture) —
+        # narrow to the one that's actually an item of the active scene.
+        scene = next((s for s in d.get("sources", [])
+                      if s.get("id") == "scene" and s.get("name") == active), None)
+        item_names = {i.get("name")
+                      for i in (scene or {}).get("settings", {}).get("items", [])}
+        in_scene = [s for s in caps if s.get("name") in item_names]
+        if len(in_scene) == 1:
+            hit = in_scene[0]
+            print(f"note: source '{source_name}' not found; using screen_capture "
+                  f"source '{hit.get('name')}' from scene '{active}' instead",
+                  file=sys.stderr)
+        else:
+            names = [s.get("name") for s in caps]
+            sys.exit(f"source '{source_name}' not found and multiple screen_capture "
+                     f"sources exist ({names}) — rename one to {source_name!r}")
 if hit is None:
     sys.exit(f"source '{source_name}' not found in scene and no screen_capture "
              f"source to fall back to")
@@ -369,7 +391,7 @@ cat <<EOF
 $(printf "\033[1;32m✓ bridge is up\033[0m")
 
 audio routing now in effect (split-cable — keep the directions apart):
-  remote voices on slop → BlackHole 2ch  → clawd's mic / SR
+  remote voices on slop → BlackHole 2ch  → clawd's ear (SR)
   clawd's TTS           → BlackHole 16ch → slop's mic
 
 one-time per-browser setup (skip if already done):

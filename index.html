@@ -541,6 +541,7 @@
   }
   #audio-meters .routing .ok { color: var(--ok); }
   #audio-meters .routing .warn { color: var(--warn); }
+  #audio-meters .routing .bad { color: var(--bad); font-weight: 700; }
   /* Device pickers — OUT/IN dropdowns under the routing readout. "auto" =
      today's behavior (OUT → BH-2ch if present, IN → system default); a manual
      pick pins the device and persists in localStorage, so the same page works
@@ -5646,6 +5647,40 @@ setInterval(() => fetchSessionStats({ countCost: false }), 7000);
     setupDevicePickers();
   }
 
+  // ── SR-ear watchdog ──────────────────────────────────────────────────────
+  // webkitSpeechRecognition always follows the OS default mic — no JS override
+  // exists. If the default drifts off BlackHole 2ch (the room→ear cable), SR
+  // goes deaf to the room no matter what the IN picker's track shows
+  // (2026-08-05 live-call incident: a bridge watcher pinned the default to
+  // 16ch = clawd listening to his own TTS cable, empty room transcript).
+  // Chrome exposes the OS default as the deviceId === "default" entry, so we
+  // can poll what SR is actually wired to and scream when it's wrong.
+  let _srEarTimer = null;
+  async function checkSrEar() {
+    if (!navigator.mediaDevices) return;
+    let defIn = null;
+    try {
+      const devs = await navigator.mediaDevices.enumerateDevices();
+      defIn = devs.find(d => d.kind === "audioinput" && d.deviceId === "default");
+    } catch { return; }
+    const $routing = document.querySelector("#audio-meters .routing");
+    if (!$routing) return;
+    let $warn = document.getElementById("sr-ear-warn");
+    const label = ((defIn && defIn.label) || "").replace(/^default\s*[-–—]\s*/i, "");
+    const deaf = !!defIn && !!label && !/blackhole\s*2ch/i.test(label);
+    if (!deaf) { if ($warn) $warn.remove(); return; }
+    if (!$warn) {
+      $warn = document.createElement("div");
+      $warn.id = "sr-ear-warn";
+      $warn.className = "routing";
+      $warn.style.whiteSpace = "normal";
+      $routing.after($warn);
+    }
+    $warn.innerHTML = `<span class="bad">⚠ SR DEAF — OS default mic is “${escapeHtml(label)}”, ` +
+      `SR needs BlackHole 2ch. Fix: SwitchAudioSource -t input -s "BlackHole 2ch" ` +
+      `(and kill any slop-bridge watcher re-pinning it).</span>`;
+  }
+
   async function setupBlackHoleBridge() {
     const $routing = document.querySelector("#audio-meters .routing");
     const setRouting = (html) => { if ($routing) $routing.innerHTML = html; };
@@ -5730,6 +5765,8 @@ setInterval(() => fetchSessionStats({ countCost: false }), 7000);
       setRouting(`<span class="warn">routing setup failed: ${escapeHtml(e.message)}</span>`);
       console.warn("[clawd] BlackHole bridge failed:", e);
     }
+    checkSrEar();
+    if (!_srEarTimer) _srEarTimer = setInterval(checkSrEar, 20000);
   }
 
   // ── Bottom-left device pickers ───────────────────────────────────────────
