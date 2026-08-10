@@ -199,6 +199,22 @@ Live fix, no tab reload needed:
 the device, so it must die first), then
 `SwitchAudioSource -t input -s "BlackHole 2ch"`.
 
+**⚠ SR FLATLINE watchdog** (2026-08-10, same banner slot): the *other* daily
+deafness — Chrome's recognizer goes **zombie** after long tab uptime /
+machine sleep: `onresult` stops but `onend` never fires, so the built-in
+onend→restart loop never runs. MIC meter still moves, WS still connected,
+stt-log silently stops (it once sat dead Aug 7→10 with the tab "looking
+fine"). The watchdog (`SR flatline watchdog` block in index.html) compares
+the mic analyser against `_srLastResultTs`: ≥25s of *accumulated* room
+sound with zero SR results → stage 1 aborts + recreates the recognizer;
+a second stall → `location.reload()` (never mid-turn: TTS/PTT/active run
+defer it; ≥10 min cooldown so a deeper breakage can't reload-loop). It also
+reopens a mic *stream* whose track ENDED (post-sleep), and in `?stt=openai`
+mode a flatlined `/api/stt` flips `window.__sttUpgradeDead` so webkit finals
+feed the transcript until stt+ answers again. All actions are announced via
+`bcLog("srwd", …)` on the backchannel debug feed. Manual fix remains: reload
+the tab with `?stt=off`.
+
 Press **Shift+D** anywhere in the page to dump full state to the
 JavaScript console.
 

@@ -3937,6 +3937,7 @@ let _restartTimer = null;
 let _lastSpokeTs = 0;         // Date.now() of last TTS audio activity (echo gate)
 let _wakeManuallyPaused = false;  // user clicked the mic to take over
 let _pttActive = false;       // push-to-talk button held (backchannel ptt-down…ptt-up): capture without a wake word, never auto-submit on silence
+let _srLastResultTs = Date.now(); // ANY onresult (interims count) — SR-liveness stamp read by the flatline watchdog
 
 // ── Phone-call mode (Shift+P) ──────────────────────────────────────────────
 // Continuous conversation: NO wake word. SR listens the whole time; each
@@ -4213,6 +4214,7 @@ function startWakeRecog() {
 
   r.onresult = (e) => {
     pingSpeechMeter();
+    _srLastResultTs = Date.now();
     const echo = inEchoWindow();
     // While push-to-talk is held we WANT to capture even right after TTS (the
     // press ducks clawd's own speech), so bypass the echo gate for PTT only.
@@ -4227,7 +4229,9 @@ function startWakeRecog() {
       // stt-upgrade flag: /api/stt (OpenAI) supplies the finalized text —
       // webkit's finals would double-enter the transcript. Interims still
       // feed wake arming / silence timers / barge detection below.
-      if (res.isFinal) { if (!_sttUpgradeOn) handleFinalChunk(res[0].transcript); }
+      // __sttUpgradeDead: the flatline watchdog flips this when the stt+
+      // recorder stops answering — webkit finals beat no transcript at all.
+      if (res.isFinal) { if (!_sttUpgradeOn || window.__sttUpgradeDead) handleFinalChunk(res[0].transcript); }
       else interim += res[0].transcript;
     }
     _liveInterim = interim.trim();
@@ -4888,6 +4892,7 @@ const STT_SEG_MIN_MS = 350;     // shorter than this → discard as a noise blip
 const STT_SEG_MAX_MS = 25000;   // hard cap so a droning room can't run forever
 let _sttInflight = 0;           // segments awaiting /api/stt — submission holds for these
 let _sttHoldUntil = 0;          // bounded-wait deadline while _sttInflight > 0
+let _sttLastRespTs = Date.now(); // last OK /api/stt response — stt+ liveness stamp for the flatline watchdog
 
 function startSttUpgradeLoop() {
   const m = window.__clawdMeters;
@@ -4929,6 +4934,12 @@ function startSttUpgradeLoop() {
     try {
       const res = await fetch("/api/stt", { method: "POST", headers: { "Content-Type": blob.type }, body: blob });
       if (!res.ok) { console.warn("[stt+] /api/stt HTTP", res.status); return; }
+      _sttLastRespTs = Date.now();
+      if (window.__sttUpgradeDead) {
+        window.__sttUpgradeDead = false;
+        srWdBanner(null);
+        bcLog("srwd", "stt+ pipeline answering again — webkit-final fallback off");
+      }
       const data = await res.json();
       const text = ((data && data.text) || "").trim();
       if (window.__clawdDebug) console.log(`%c[stt+] ${ms}ms →`, "color:#6cf", text || "(empty)");
@@ -4961,6 +4972,130 @@ if (_sttUpgradeOn) {
     if (m && m.micStream && m.micAnalyser) { clearInterval(_sttWait); startSttUpgradeLoop(); }
   }, 500);
 }
+
+// ── SR flatline watchdog ─────────────────────────────────────────────────────
+// The daily "transcript stopped flowing" killer. Chrome's webkitSpeechRecognition
+// can go ZOMBIE after long uptime / machine sleep / a mic-stack hiccup: it stops
+// delivering onresult but never fires onend, so the onend→startWakeRecog restart
+// loop never runs. From outside it looks perfectly alive — MIC meter moving, tab
+// happy, WS connected — while SR (and with it the wake word AND the stt-log room
+// transcript) is dead. Until 2026-08-10 the only fix was a human noticing days of
+// missing transcript and reloading the tab.
+// Detection: the MIC analyser says the room is making sound, but SR hasn't fired
+// a single onresult (interims count) in a long time. A live recognizer emits
+// interims within ~1s of speech, so 25s of ACCUMULATED sound with zero results
+// is unambiguous. Response is staged: (1) abort + recreate the recognizer;
+// (2) if that doesn't take, reload the page (the known-good human fix) — but
+// never mid-turn (TTS playing / PTT held / brain run active) and at most once
+// per cooldown so a deeper breakage can't reload-loop the tab.
+// Also here: a mic *stream* that died (post-sleep track ends) is reopened, and
+// in stt+ mode a flatlined /api/stt pipeline flips __sttUpgradeDead so webkit
+// finals take over the transcript (degraded beats silent).
+const SR_WD_LOUD_PCT = 6;                     // mic RMS-% (MIC-meter scale) that counts as "room sound"
+const SR_WD_STALL_MS = 25000;                 // accumulated sound with zero SR results → act
+const SR_WD_TICK_MS = 250;
+const SR_WD_RELOAD_COOLDOWN_MS = 10 * 60 * 1000;
+let _srWdLoudMs = 0;        // sound accumulated while SR silent
+let _srWdStage = 0;         // 0 = healthy, 1 = restarted once (next stall escalates)
+let _srWdSttLoudMs = 0;     // same accumulator for the stt+ pipeline
+let _srWdMicReopenTs = 0;
+let _srWdBuf = null;
+
+function srWdBanner(html) {
+  let $w = document.getElementById("sr-wd-warn");
+  if (!html) { if ($w) $w.remove(); return; }
+  const $routing = document.querySelector("#audio-meters .routing");
+  if (!$routing) return;
+  if (!$w) {
+    $w = document.createElement("div");
+    $w.id = "sr-wd-warn";
+    $w.className = "routing";
+    $w.style.whiteSpace = "normal";
+    $routing.after($w);
+  }
+  $w.innerHTML = `<span class="bad">${html}</span>`;
+}
+
+function srWdKickRecog() {
+  try { if (_recog) _recog.abort(); } catch {}
+  _recog = null;
+  clearTimeout(_restartTimer);
+  _restartTimer = setTimeout(startWakeRecog, RESTART_DELAY_MS);
+}
+
+setInterval(() => {
+  const m = window.__clawdMeters;
+  if (!m || !m.micAnalyser) return;
+
+  // A mic track that ENDED (sleep/wake, device churn) starves the meters, the
+  // stt+ recorder and this watchdog's own level read — reopen it. SR follows
+  // the OS default mic independently, so this doesn't disturb a live recognizer.
+  const tr = m.micStream && m.micStream.getAudioTracks && m.micStream.getAudioTracks()[0];
+  if (tr && tr.readyState === "ended" && Date.now() - _srWdMicReopenTs > 30000) {
+    _srWdMicReopenTs = Date.now();
+    bcLog("srwd", "mic track ended — reopening mic stream");
+    if (m.openMic) m.openMic();
+    return;
+  }
+
+  if (!_srWdBuf || _srWdBuf.length !== m.micAnalyser.fftSize) _srWdBuf = new Uint8Array(m.micAnalyser.fftSize);
+  m.micAnalyser.getByteTimeDomainData(_srWdBuf);
+  let sum = 0;
+  for (let i = 0; i < _srWdBuf.length; i++) { const v = (_srWdBuf[i] - 128) / 128; sum += v * v; }
+  const pct = Math.min(100, Math.sqrt(sum / _srWdBuf.length) * 240);
+  const loud = pct >= SR_WD_LOUD_PCT;
+  const now = Date.now();
+
+  // ── webkit SR liveness ──
+  if (now - _srLastResultTs < 5000) {
+    _srWdLoudMs = 0;
+    if (_srWdStage > 0) {
+      _srWdStage = 0;
+      srWdBanner(null);
+      bcLog("srwd", "SR recovered — results flowing again");
+    }
+  } else if (loud && !_wakeManuallyPaused) {
+    _srWdLoudMs += SR_WD_TICK_MS;
+  }
+  if (_srWdLoudMs >= SR_WD_STALL_MS) {
+    _srWdLoudMs = 0;
+    if (_srWdStage === 0) {
+      _srWdStage = 1;
+      console.warn(`[srwd] SR flatline: ${SR_WD_STALL_MS / 1000}s of room sound, zero results — hard-restarting recognizer`);
+      bcLog("srwd", "SR zombie detected (sound but no results) — hard-restarting recognizer");
+      srWdBanner("⚠ SR FLATLINE — recognizer went zombie; auto-restarting…");
+      srWdKickRecog();
+    } else {
+      // Restart didn't take. Reload is the known-good fix, but never yank the
+      // page mid-turn, and never loop: outside the cooldown → reload; inside
+      // it → keep kicking the recognizer and tell the human.
+      const tab = (typeof currentTab === "function") ? currentTab() : null;
+      if (_ttsAudio || _pttActive || (tab && tab.activeRunId)) return;
+      const lastReload = +(localStorage.getItem("clawd.srWdReloadTs") || 0);
+      if (now - lastReload < SR_WD_RELOAD_COOLDOWN_MS) {
+        srWdBanner("⚠ SR DEAD — restart didn't take and auto-reload is cooling down. Reload the clawd tab.");
+        srWdKickRecog();
+        return;
+      }
+      localStorage.setItem("clawd.srWdReloadTs", String(now));
+      bcLog("srwd", "SR restart didn't take — auto-reloading the voice page");
+      location.reload();
+    }
+  }
+
+  // ── stt+ pipeline liveness (upgrade mode only) ──
+  if (_sttUpgradeOn && !window.__sttUpgradeDead) {
+    if (now - _sttLastRespTs < 8000) _srWdSttLoudMs = 0;
+    else if (loud) _srWdSttLoudMs += SR_WD_TICK_MS;
+    if (_srWdSttLoudMs >= SR_WD_STALL_MS) {
+      _srWdSttLoudMs = 0;
+      window.__sttUpgradeDead = true;
+      console.warn("[srwd] stt+ pipeline flatlined — falling back to webkit finals for the transcript");
+      bcLog("srwd", "stt+ (/api/stt) flatlined — webkit finals now feeding the transcript");
+      srWdBanner("⚠ stt+ recorder flatlined — transcript degraded to webkit SR (auto-heals when /api/stt answers)");
+    }
+  }
+}, SR_WD_TICK_MS);
 
 // ── Pill state poller ─────────────────────────────────────────────────────
 // We recompute the pill state continuously from observed signals
