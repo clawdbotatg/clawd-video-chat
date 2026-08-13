@@ -49,6 +49,10 @@ import websockets
 HERE = os.path.dirname(os.path.abspath(__file__))
 PROMPTS_DIR = os.path.join(HERE, "prompts")
 
+if HERE not in sys.path:
+    sys.path.insert(0, HERE)
+import cc_accounts  # noqa: E402  — subscription rotation (see its docstring)
+
 AGENT_HOME = os.path.abspath(
     os.environ.get("CLAUDE_P_AGENT_HOME", os.path.expanduser("~/clawd/clawd-harness/projects/claude-p-agent"))
 )
@@ -73,10 +77,11 @@ def _channel_prompt(chan):
     return read_prompt(os.path.join(PROMPTS_DIR, _CHANNEL_PROMPTS[chan]))
 
 
-def _claude_extra_args():
+def _claude_extra_args(model=None):
     args = ["--include-partial-messages"]
-    if MODEL:
-        args += ["--model", MODEL]
+    m = MODEL if model is None else model
+    if m:
+        args += ["--model", m]
     return args
 
 
@@ -199,6 +204,7 @@ def convo_log(kind, channel, session_key, text):
         pass
 
 
+_last_acct = None      # last account a turn ran on (for change-only ACCT logging)
 sessions = {}          # sessionKey -> {"history": [...]}  (display buffer for chat.history;
                        #                NOT fed to the brain — the resumed session holds history)
 runs = {}              # runId -> asyncio.subprocess.Process
@@ -288,6 +294,13 @@ async def run_claude(session_key, run_id, prompt, public, trusted=False):
     text = ""
 
     async def emit(state):
+        # Never STREAM the CLI's limit banner — on the voice path deltas go
+        # straight to TTS, and the 2026-08-13 on-air failure was clawd reading
+        # "You've hit your session limit" to the room. A bounced turn is
+        # retried on another account (hop loop below); only if every pool is
+        # walled does the final banner get through (then it's the truth).
+        if state != "final" and cc_accounts.looks_like_limit(text, ""):
+            return
         await broadcast_chat(run_id, session_key, state,
                              say_wrap(text, state == "final") if public else text)
 
@@ -327,9 +340,22 @@ async def run_claude(session_key, run_id, prompt, public, trusted=False):
             _agent({"toolCallId": b.get("tool_use_id"), "phase": "result",
                     "output": out[:600], "isError": bool(b.get("is_error"))})
 
+    # Filled by on_event from the CLI's STRUCTURED limit signal (stream-json
+    # emits {"type":"rate_limit_event","rate_limit_info":{"status":"rejected",
+    # "resetsAt":<epoch>,...}} on a walled plan — captured live off sub5,
+    # 2026-08-13). Exact and unambiguous, so the hop loop keys off this first;
+    # the text needles in cc_accounts are the fallback.
+    limit_hit = {}
+    api_err = {}
+
     def on_event(evt):
         nonlocal text
         etype = evt.get("type")
+        if etype == "rate_limit_event":
+            info = evt.get("rate_limit_info") or {}
+            if (info.get("status") or "").lower() == "rejected":
+                limit_hit["resetsAt"] = info.get("resetsAt") or 0
+            return
         if etype == "stream_event":
             inner = evt.get("event", {})
             if inner.get("type") == "content_block_delta":
@@ -344,6 +370,16 @@ async def run_claude(session_key, run_id, prompt, public, trusted=False):
                             "stream": "thinking",
                             "data": {"text": delta["thinking"]}}), loop)
         elif etype == "assistant":
+            if evt.get("error") or evt.get("is_api_error_message"):
+                # SYNTHETIC assistant message carrying an API error (the limit
+                # banner arrives this way, model "<synthetic>"). Never stream
+                # it — TTS would read it to the room. Stash it: the hop loop
+                # checks it for the limit needle, and if the turn truly dies
+                # it becomes the final text so the failure isn't silent.
+                blocks = (evt.get("message") or {}).get("content") or []
+                api_err["text"] = "".join(
+                    b.get("text", "") for b in blocks if b.get("type") == "text")
+                return
             blocks = (evt.get("message") or {}).get("content") or []
             _tool_starts(blocks)
             full = "".join(b.get("text", "") for b in blocks if b.get("type") == "text")
@@ -353,38 +389,90 @@ async def run_claude(session_key, run_id, prompt, public, trusted=False):
         elif etype == "user":
             _tool_results((evt.get("message") or {}).get("content") or [])
         elif etype == "result":
+            if evt.get("is_error"):
+                return   # error result (limit banner et al) — handled via api_err/limit_hit
             if isinstance(evt.get("result"), str) and len(evt["result"]) > len(text):
                 text = evt["result"]
                 asyncio.run_coroutine_threadsafe(emit("delta"), loop)
 
+    # --- the turn, with subscription-wall hopping (cc_accounts) --------------
+    # Before each attempt: pick the coolest usable account, point
+    # CLAUDE_CONFIG_DIR at it, symlink this conversation's transcript across so
+    # --resume still finds it. If the turn bounces off the CLI's limit banner,
+    # bench that account, hop, and RE-RUN THE SAME TURN — the call never waits
+    # on a human to sed a plist again (2026-08-04 / 2026-08-13 outages).
     err = ""
+    tried = set()
     try:
-        result = await asyncio.to_thread(
-            run_turn,
-            prompt,
-            append_system_prompt=sys_prompt,
-            remember=session_key,   # engine resumes this conversation's session + saves the new id
-            cwd=CWD,
-            add_dirs=_add_dirs(),
-            extra_args=_claude_extra_args(),
-            on_event=on_event,
-            input_via="stdin",
-            return_meta=True,
-            proc_holder=proc_holder,
-        )
-        # Only adopt the engine's final text when it EXTENDS what we streamed.
-        # result["text"] carries just the last assistant message; on a
-        # tool-using turn the streamed cumulative `text` is longer, and
-        # unconditionally swapping in the shorter final made the page's TTS
-        # see a "diverged" reply and speak the whole answer a second time.
-        if result["text"] and len(result["text"]) > len(text):
-            text = result["text"]
-        if result.get("session_id"):
-            # The engine already persisted the id; we only mirror it into the gauge
-            # sentinel so the :7900 context chip reads OUR live session.
-            _write_brain_session(session_key, result["session_id"])
-    except Exception as e:
-        err = str(e)
+        for attempt in range(1 + max(0, cc_accounts.LIMIT_RETRIES)):
+            err = ""
+            account = await asyncio.to_thread(
+                cc_accounts.ensure_for_turn,
+                current_session(session_key), tuple(tried), attempt > 0)
+            model = None   # None → keep MODEL as configured
+            if account and MODEL and "fable" in MODEL.lower() \
+                    and not account.get("fable_capable", True):
+                model = cc_accounts.FALLBACK_MODEL
+            global _last_acct
+            acct_name = account["name"] if account else "pinned env"
+            if attempt or model or acct_name != _last_acct:
+                convo_log("ACCT", chan, session_key,
+                          f"attempt {attempt + 1} on {acct_name}"
+                          + (f" model={model}" if model else ""))
+            _last_acct = acct_name
+            try:
+                result = await asyncio.to_thread(
+                    run_turn,
+                    prompt,
+                    append_system_prompt=sys_prompt,
+                    remember=session_key,   # engine resumes this conversation's session + saves the new id
+                    cwd=CWD,
+                    add_dirs=_add_dirs(),
+                    extra_args=_claude_extra_args(model),
+                    on_event=on_event,
+                    input_via="stdin",
+                    return_meta=True,
+                    proc_holder=proc_holder,
+                )
+                # Only adopt the engine's final text when it EXTENDS what we streamed.
+                # result["text"] carries just the last assistant message; on a
+                # tool-using turn the streamed cumulative `text` is longer, and
+                # unconditionally swapping in the shorter final made the page's TTS
+                # see a "diverged" reply and speak the whole answer a second time.
+                if result["text"] and len(result["text"]) > len(text):
+                    text = result["text"]
+                if result.get("session_id"):
+                    # The engine already persisted the id; we only mirror it into the gauge
+                    # sentinel so the :7900 context chip reads OUR live session.
+                    _write_brain_session(session_key, result["session_id"])
+            except Exception as e:
+                err = str(e)
+            if proc_holder.get("aborted"):
+                break
+            hit = (bool(limit_hit)
+                   or cc_accounts.looks_like_limit(text, err)
+                   or cc_accounts.looks_like_limit(api_err.get("text", ""), ""))
+            if not hit:
+                break
+            if account is None:
+                break   # rotation inactive — nothing to hop to
+            cc_accounts.note_limit(account["name"],
+                                   float(limit_hit.get("resetsAt") or 0))
+            tried.add(account["name"])
+            convo_log("LIMIT", chan, session_key,
+                      f"{account['name']} walled (resets "
+                      f"{limit_hit.get('resetsAt') or '?'}) → hopping: "
+                      f"{(api_err.get('text') or err or text)[:160]}")
+            text = ""          # drop the banner; the retry streams fresh
+            err = ""
+            limit_hit.clear()
+            api_err.clear()
+            seen_tools.clear()
+        # A turn that died on a non-limit API error streamed nothing — surface
+        # the error as the final text so the failure is visible (and, on voice,
+        # spoken once) instead of dead air with only a log line.
+        if not text.strip() and api_err.get("text"):
+            text = api_err["text"]
     finally:
         aborted = bool(proc_holder.get("aborted"))
         runs.pop(run_id, None)
@@ -539,6 +627,19 @@ async def handler(ws):
 async def main():
     print(f"cc-bridge: claude -p brain on ws://{HOST}:{PORT}"
           f"  (model={MODEL or 'default'}, cwd={CWD})")
+    if cc_accounts.ROTATE:
+        # Eager probe so the first turn doesn't pay the roster scan, and the
+        # log shows which pools the brain can hop across.
+        try:
+            summary = await asyncio.to_thread(cc_accounts.roster_summary)
+            print(f"cc-bridge: account rotation ON\n{summary}", flush=True)
+        except Exception as e:
+            print(f"cc-bridge: account rotation probe failed ({e}) — "
+                  f"falling back to pinned CLAUDE_CONFIG_DIR", flush=True)
+    else:
+        print("cc-bridge: account rotation OFF (CC_ROTATE=0) — pinned "
+              f"CLAUDE_CONFIG_DIR={os.environ.get('CLAUDE_CONFIG_DIR', '~/.claude')}",
+              flush=True)
     async with websockets.serve(handler, HOST, PORT, max_size=None):
         await asyncio.Future()
 
