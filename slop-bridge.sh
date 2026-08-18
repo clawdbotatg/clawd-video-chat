@@ -111,11 +111,27 @@ else
 fi
 say "Setting system OUTPUT → $SYS_OUTPUT_DEVICE"
 SwitchAudioSource -t output -s "$SYS_OUTPUT_DEVICE"
-# Same per-device-mute trap on the remote-voices cable (volume left alone —
-# the barge/gate tuning was calibrated against its current level).
+# Same per-device-mute trap on the remote-voices cable — and (2026-08-18) the
+# same trap via VOLUME: the 2ch cable was found at output+input volume 0, which
+# "unmute" doesn't touch (volume 0 ≠ muted), so every app played silence into
+# it and SR was fed nothing — clawd totally deaf with all daemons green. Likely
+# cause: keyboard volume-down/mute pressed while 2ch was the default output
+# (macOS remembers 0 on that device forever). Rescue any near-silent level to
+# 100; a healthy calibrated level is left alone.
 osascript -e 'set volume without output muted'
+OUTVOL=$(osascript -e 'output volume of (get volume settings)' 2>/dev/null || echo 0)
+if [ "${OUTVOL:-0}" -lt 50 ]; then
+    say "Ear cable $SYS_OUTPUT_DEVICE output volume was $OUTVOL (near-silent) → 100"
+    osascript -e 'set volume output volume 100'
+fi
 say "Setting system INPUT  → $SYS_INPUT_DEVICE"
 SwitchAudioSource -t input  -s "$SYS_INPUT_DEVICE"
+# Input GAIN is its own per-device knob; 0 = SR reads silence forever.
+INVOL=$(osascript -e 'input volume of (get volume settings)' 2>/dev/null || echo 0)
+if [ "${INVOL:-0}" -lt 50 ]; then
+    say "Ear cable $SYS_INPUT_DEVICE input volume was $INVOL (near-silent) → 100"
+    osascript -e 'set volume input volume 100'
+fi
 
 # ── 3b. Audio-defaults watcher ───────────────────────────────────────────────
 # macOS auto-switches the default output/input whenever a new device is
@@ -143,6 +159,14 @@ nohup bash -c '
     cur_in=$(SwitchAudioSource -c -t input  2>/dev/null)
     [ "$cur_out" != "$out" ] && SwitchAudioSource -t output -s "$out" >/dev/null 2>&1
     [ "$cur_in"  != "$in_" ] && SwitchAudioSource -t input  -s "$in_" >/dev/null 2>&1
+    # Volume-key guard (2026-08-18): a volume-down/mute keypress while the 2ch
+    # cable is default zeroes ITS per-device volume — silently deafening SR
+    # mid-call. Re-floor near-silent levels on the ear cable.
+    vols=$(osascript -e "set v to (get volume settings)" -e "(output volume of v as text) & \" \" & (input volume of v as text) & \" \" & (output muted of v as text)" 2>/dev/null)
+    ov=${vols%% *}; rest=${vols#* }; iv=${rest%% *}; muted=${rest#* }
+    [ "${ov:-100}" -lt 50 ] 2>/dev/null && osascript -e "set volume output volume 100" >/dev/null 2>&1
+    [ "${iv:-100}" -lt 50 ] 2>/dev/null && osascript -e "set volume input volume 100" >/dev/null 2>&1
+    [ "$muted" = "true" ] && osascript -e "set volume without output muted" >/dev/null 2>&1
     sleep 2
   done
 ' >/tmp/slop-bridge-watch.log 2>&1 &
