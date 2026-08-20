@@ -80,10 +80,12 @@ else
     # (e.g. "BlackHole 16ch"), which would break `. "$STATE_FILE"`.
     PREV_OUT=""
     PREV_IN=""
+    PREV_SYS=""
     while IFS='=' read -r key val; do
         case "$key" in
             PREV_OUT) PREV_OUT="$val" ;;
             PREV_IN)  PREV_IN="$val" ;;
+            PREV_SYS) PREV_SYS="$val" ;;
         esac
     done < "$STATE_FILE"
     [ -n "$PREV_OUT" ] || die "PREV_OUT missing in $STATE_FILE"
@@ -93,6 +95,10 @@ else
     SwitchAudioSource -t output -s "$PREV_OUT" || true
     say "Restoring system INPUT  → $PREV_IN"
     SwitchAudioSource -t input  -s "$PREV_IN"  || true
+    # Sound-effects slot (notification dings). Old state files predate PREV_SYS;
+    # fall back to the restored output device so dings don't stay on a dead cable.
+    say "Restoring SOUND EFFECTS → ${PREV_SYS:-$PREV_OUT}"
+    SwitchAudioSource -t system -s "${PREV_SYS:-$PREV_OUT}" 2>/dev/null || true
 
     rm -f "$STATE_FILE"
 fi

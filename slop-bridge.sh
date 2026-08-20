@@ -90,9 +90,11 @@ STATE_FILE="$HOME/.cache/clawd/slop-bridge.state"
 mkdir -p "$(dirname "$STATE_FILE")"
 PREV_OUT="$(SwitchAudioSource -c -t output)"
 PREV_IN="$(SwitchAudioSource -c -t input)"
+PREV_SYS="$(SwitchAudioSource -c -t system 2>/dev/null || true)"
 {
     echo "PREV_OUT=$PREV_OUT"
     echo "PREV_IN=$PREV_IN"
+    echo "PREV_SYS=$PREV_SYS"
 } > "$STATE_FILE"
 say "Snapshot saved → $STATE_FILE (restore with ./slop-bridge-stop.sh)"
 
@@ -126,6 +128,16 @@ if [ "${OUTVOL:-0}" -lt 50 ]; then
 fi
 say "Setting system INPUT  → $SYS_INPUT_DEVICE"
 SwitchAudioSource -t input  -s "$SYS_INPUT_DEVICE"
+# macOS has a THIRD device slot: "sound effects" (System Settings → Sound →
+# "Play sound effects through"). It does NOT follow the default output — so
+# with output pinned to the 2ch cable, notification dings (Messages, etc.)
+# kept playing through the built-in speakers at full alert volume, blasting
+# the room mid-call (found 2026-08-20). Pin it to the ear cable too: dings
+# become a faint blip in clawd's ear instead of a speaker blast. NEVER pin it
+# to $TTS_CABLE — that would ding into the call itself.
+say "Setting system SOUND EFFECTS → $SYS_OUTPUT_DEVICE (no speaker dings mid-call)"
+SwitchAudioSource -t system -s "$SYS_OUTPUT_DEVICE" 2>/dev/null \
+    || warn "SwitchAudioSource -t system unsupported — text dings will hit the speakers"
 # Input GAIN is its own per-device knob; 0 = SR reads silence forever.
 INVOL=$(osascript -e 'input volume of (get volume settings)' 2>/dev/null || echo 0)
 if [ "${INVOL:-0}" -lt 50 ]; then
@@ -157,8 +169,12 @@ nohup bash -c '
   while true; do
     cur_out=$(SwitchAudioSource -c -t output 2>/dev/null)
     cur_in=$(SwitchAudioSource -c -t input  2>/dev/null)
+    cur_sys=$(SwitchAudioSource -c -t system 2>/dev/null)
     [ "$cur_out" != "$out" ] && SwitchAudioSource -t output -s "$out" >/dev/null 2>&1
     [ "$cur_in"  != "$in_" ] && SwitchAudioSource -t input  -s "$in_" >/dev/null 2>&1
+    # Sound-effects slot too — a wandering one puts text-message dings back on
+    # the built-in speakers mid-call.
+    [ -n "$cur_sys" ] && [ "$cur_sys" != "$out" ] && SwitchAudioSource -t system -s "$out" >/dev/null 2>&1
     # Volume-key guard (2026-08-18): a volume-down/mute keypress while the 2ch
     # cable is default zeroes ITS per-device volume — silently deafening SR
     # mid-call. Re-floor near-silent levels on the ear cable.
