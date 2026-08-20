@@ -15,6 +15,13 @@ These notes are for the things you can't infer from reading code.
 > `cc-watcher`, the harness, the backchannel proxy), their ports/logs, health
 > checks, and off-switches. Read it before reworking the call system, since these
 > won't stop themselves.
+>
+> **"Clawd can't hear me" / "I can't hear clawd" / "my Mac is blasting sounds"?**
+> See **[`AUDIO-RUNBOOK.md`](AUDIO-RUNBOOK.md)** — the three macOS audio device
+> slots (output / input / **sound effects**), the per-device volume+mute traps, a
+> symptom → cause → fix table with the exact commands, and the rules for editing
+> `slop-bridge.sh`. Nearly every audio incident looked "all green" until someone
+> checked the right slot.
 
 ## Quick verbs the user uses
 
@@ -144,6 +151,16 @@ end-to-end from the shell:
 `ffmpeg -f avfoundation -i ":<idx>" -t 3 x.wav & say -a "BlackHole 16ch" test`
 then check `astats` RMS (−inf = dead cable).
 
+**Three slots, not two (2026-08-20):** besides default output and input, macOS
+has a **sound-effects** slot (Sound → "Play sound effects through";
+`SwitchAudioSource -c -t system`) that ignores the default output. Left on the
+built-in speakers it blasted text-message dings into the room mid-call, and
+the reflex fix — volume keys down — zeroed 2ch's per-device level and deafened
+clawd instead (the keys adjust whichever device is default = the ear cable).
+`slop-bridge.sh` now pins it to 2ch (dings = faint blip in clawd's ear), the
+watcher re-asserts it, `slop-bridge-stop.sh` restores it. Never 16ch — that
+dings into the call. Full table: `AUDIO-RUNBOOK.md`.
+
 OBS captures the **clawd-video-chat Chrome window** as the slop camera
 feed; OBS audio is muted (audio routes through BlackHole, not OBS).
 
@@ -223,6 +240,8 @@ JavaScript console.
 - `index.html` — the entire frontend (single file, no build step).
 - `server.py` — HTTP + TTS proxy, port 7900.
 - `slop-bridge.sh` / `slop-bridge-stop.sh` — bridge bring-up / tear-down.
+- `AUDIO-RUNBOOK.md` — the three macOS audio slots, per-device volume traps,
+  symptom→fix table, incident log. Read before touching `slop-bridge.sh`.
 - `stream-setup.sh` — older Chrome `--app` + OBS setup, kept for the
   non-slop streaming workflow.
 - `clawdassets/` — avatar video clips.
