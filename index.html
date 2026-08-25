@@ -4933,7 +4933,14 @@ function startSttUpgradeLoop() {
     _sttInflight++;
     try {
       const res = await fetch("/api/stt", { method: "POST", headers: { "Content-Type": blob.type }, body: blob });
-      if (!res.ok) { console.warn("[stt+] /api/stt HTTP", res.status); return; }
+      if (!res.ok) {
+        console.warn("[stt+] /api/stt HTTP", res.status);
+        // 503 = the server has no OPENAI_API_KEY — that's structural, not a
+        // blip. Fall back to webkit finals NOW instead of waiting for the 25s
+        // flatline accumulator (which every reload used to reset).
+        if (res.status === 503) sttUpgradeAbandon("server lost its OPENAI_API_KEY (503)");
+        return;
+      }
       _sttLastRespTs = Date.now();
       if (window.__sttUpgradeDead) {
         window.__sttUpgradeDead = false;
@@ -4965,7 +4972,30 @@ function startSttUpgradeLoop() {
   console.log("%c[stt+] OpenAI STT upgrade ACTIVE — webkit finals suppressed, /api/stt supplies the transcript", "color:#34eeb6;font-weight:bold");
 }
 
+// stt+ can only work when the SERVER holds an OPENAI_API_KEY — and the sticky
+// localStorage flag outlives any server. The 2026-08-25 incident: the flag was
+// on, .env's key line was EMPTY, so every /api/stt 503'd while webkit finals
+// stayed suppressed → transcript dead, flapping back only when the 25s flatline
+// fallback tripped, re-broken by every reload. This abandons stt+ for good:
+// dead-flag NOW (webkit finals feed the transcript immediately) + sticky flag
+// cleared (next boot is plain webkit, no probe race).
+function sttUpgradeAbandon(reason) {
+  if (window.__sttUpgradeDead) return;
+  window.__sttUpgradeDead = true;
+  try { localStorage.removeItem("clawd.sttUpgrade"); } catch (e) {}
+  console.warn("[stt+] ABANDONED:", reason, "— sticky flag cleared, webkit SR feeds the transcript");
+  bcLog("srwd", "stt+ abandoned (" + reason + ") — sticky flag cleared, transcript on webkit SR");
+  srWdBanner("⚠ stt+ unavailable — " + reason + ". Transcript running on webkit SR; sticky ?stt=openai flag cleared.");
+}
+
 if (_sttUpgradeOn) {
+  // Boot probe: a sub-2000-byte body makes /api/stt answer BEFORE any OpenAI
+  // round trip — 503 = no key on the server, 200 {"text":""} = key present.
+  // Free, safe, and it runs on every stt+ boot so a keyless server can never
+  // silently eat the transcript again.
+  fetch("/api/stt", { method: "POST", headers: { "Content-Type": "audio/webm" }, body: new Blob([]) })
+    .then((res) => { if (res.status === 503) sttUpgradeAbandon("server has no OPENAI_API_KEY"); })
+    .catch(() => {});   // transient fetch failure: let the normal flatline watchdog judge
   // The meters open the mic asynchronously at boot — wait for the stream.
   const _sttWait = setInterval(() => {
     const m = window.__clawdMeters;
