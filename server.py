@@ -92,6 +92,22 @@ STT_LOG_PATH = os.path.expanduser(
 # server that never went down.
 STT_EPISODE_GAP = int(os.environ.get("STT_EPISODE_GAP", "2700"))
 
+# ── stt-selftest plumbing (2026-09-01) ────────────────────────────────────────
+# stt-selftest.sh (launchd com.clawd.stt-selftest) proves the WHOLE transcript
+# pipeline every 20 min by speaking a marker phrase into BlackHole 2ch. When SR
+# hears it, the page logs it here like any utterance — we intercept it, touch
+# the heartbeat file the prober is watching, and DROP it (never into
+# stt-log.jsonl, meeting transcripts, or the SSE feed; the page also refuses to
+# let it arm wake/phone turns). Match loosely: SR mangles words.
+SELFTEST_RE = re.compile(r"transcript self[- ]?test", re.I)
+SELFTEST_HEARD = os.path.expanduser("~/.cache/clawd/stt-selftest-heard")
+# Prober's stage-1 heal: it touches this file; the page polls /health and
+# reloads ITSELF when the file is newer than the page's own boot (no AppleScript
+# / TCC needed, and the page can defer mid-turn). Stale flags self-clear by
+# that comparison — nothing ever deletes the file.
+PAGE_RELOAD_REQ = os.path.expanduser("~/.cache/clawd/clawd-page-reload.req")
+LAST_TTS_TS = 0.0  # set by handle_tts; the prober won't yank the tab mid-speech
+
 
 def rotate_stt_log(reason="boot"):
     """Give each call session its own transcript: archive the previous
@@ -467,7 +483,22 @@ class Handler(BaseHTTPRequestHandler):
         elif path == "/api/session-stats":
             self.handle_session_stats()
         elif path == "/health":
-            self.send_json({"status": "ok"})
+            # Extended for the stt-selftest loop: the page polls this to see a
+            # reload request (reload_req_ts > its own boot time → self-reload),
+            # and the prober reads last_tts_ts to avoid yanking the tab while
+            # clawd is mid-sentence. Extra fields only — "status":"ok" stays.
+            def _mt(p):
+                try:
+                    return int(os.path.getmtime(p) * 1000)
+                except OSError:
+                    return 0
+            self.send_json({
+                "status": "ok",
+                "stt_log_mtime": _mt(STT_LOG_PATH),
+                "selftest_heard_ts": _mt(SELFTEST_HEARD),
+                "reload_req_ts": _mt(PAGE_RELOAD_REQ),
+                "last_tts_ts": int(LAST_TTS_TS * 1000),
+            })
         elif path == "/api/stt-count":
             # Size of the CURRENT stt-log (utterances heard since the last
             # roll), for the backchannel's 🎬 roll-log button counter.
@@ -737,6 +768,18 @@ class Handler(BaseHTTPRequestHandler):
             text = (body.get("text") or "").strip()
             if not text:
                 self.send_json({"ok": True, "skipped": True})
+                return
+            if SELFTEST_RE.search(text):
+                # stt-selftest marker made the full loop — heartbeat and drop.
+                # (If room speech merged into the same SR chunk it's dropped
+                # too; a 20-min cadence makes that loss negligible.)
+                try:
+                    os.makedirs(os.path.dirname(SELFTEST_HEARD), exist_ok=True)
+                    with open(SELFTEST_HEARD, "w", encoding="utf-8") as hf:
+                        hf.write(json.dumps({"ts": rec["ts"], "heard": text}) + "\n")
+                except Exception:
+                    pass
+                self.send_json({"ok": True, "selftest": True})
                 return
             rec["text"] = text
         try:
@@ -1591,6 +1634,8 @@ class Handler(BaseHTTPRequestHandler):
         })
 
     def handle_tts(self):
+        global LAST_TTS_TS
+        LAST_TTS_TS = time.time()
         try:
             length = int(self.headers.get("Content-Length", 0))
             body = json.loads(self.rfile.read(length))

@@ -29,11 +29,12 @@ tools around him.
 | `com.clawd.cc-watcher` | The **heartbeat** — watches coding workers and pings the brain when one blocks/finishes (see below). | — (WS client) | `~/.cache/clawd/cc-watcher.log` + `/tmp/cc-watcher.log` |
 | clawd-harness | The **worker engine** (clawd's hands) — spawns/observes coding `claude` sessions per repo. (Its own launchd label is `com.clawd.harness`.) | `8787` | harness logs |
 | `com.clawd.backchannel` | The **private ear** — serves the private LAN chat page (`:7850`) + a WS proxy (`:7851`) that reaches the bridge through the Ed25519 handshake; carries Austin's PRIVATE messages. Folded into this repo at `backchannel/` (was the standalone `clawd-backchannel` repo). | `7850`/`7851` | `~/.cache/clawd/backchannel.log` |
+| `com.clawd.stt-selftest` | The **hearing test** — every 20 min speaks a marker phrase into BlackHole 2ch and verifies it traverses the whole transcript pipeline (cable → SR → `/api/stt-log` → heartbeat file; `server.py` filters the marker so it never reaches the transcript or the brain). On failure: page self-reload → AppleScript tab reload → macOS notification. Silently skips when `:7900` is down (rig off) or the default input isn't 2ch. `stt-selftest.sh`. | — | `/tmp/stt-selftest.log` |
 
 ## Is it healthy? / what's running?
 
 ```bash
-launchctl list | grep -E 'cc-bridge|cc-watcher|clawd.harness|clawd.backchannel'   # alive? (col 1 = PID, col 2 = last exit code)
+launchctl list | grep -E 'cc-bridge|cc-watcher|clawd.harness|clawd.backchannel|stt-selftest'   # alive? (col 1 = PID, col 2 = last exit code)
 lsof -nP -iTCP:7900 -sTCP:LISTEN     # call page (eyes/ears/mouth)
 lsof -nP -iTCP:7861 -sTCP:LISTEN     # bridge (brain)
 lsof -nP -iTCP:8787 -sTCP:LISTEN     # harness (hands)

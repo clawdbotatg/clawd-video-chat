@@ -4830,6 +4830,13 @@ function handleFinalChunk(rawText) {
     logStt({ echo: true, dropped: text });
     return;
   }
+  // stt-selftest marker (spoken into BH-2ch by stt-selftest.sh): forward to
+  // the server — which heartbeats + drops it — but never let it reach the
+  // transcript window, the wake buffer, or a phone-mode barge/turn.
+  if (/transcript self[- ]?test/i.test(text)) {
+    logStt({ text });
+    return;
+  }
   // Every finalized chunk feeds the rolling transcript that the wake detector's
   // recent-window match reads (see onresult). Arming itself happens there,
   // against the combined window; here we only grow the command once armed.
@@ -5170,6 +5177,24 @@ setInterval(() => {
     }
   }
 }, SR_WD_TICK_MS);
+
+// ── stt-selftest reload hook ─────────────────────────────────────────────────
+// Stage-1 heal for the external transcript prober (stt-selftest.sh): when its
+// end-to-end marker test fails it touches ~/.cache/clawd/clawd-page-reload.req;
+// we poll /health and reload OURSELVES when that flag is newer than this page
+// load. Self-reload beats an AppleScript reload: no TCC/Automation grant
+// needed, and we can defer mid-turn exactly like the SR watchdog does. A flag
+// older than page boot is stale (already healed) — ignored, nothing to clean.
+setInterval(async () => {
+  try {
+    const h = await (await fetch("/health")).json();
+    if (!h.reload_req_ts || h.reload_req_ts <= performance.timeOrigin) return;
+    const tab = (typeof currentTab === "function") ? currentTab() : null;
+    if (_ttsAudio || _pttActive || _wakeArmed || (tab && tab.activeRunId)) return; // mid-turn: defer, poll again
+    bcLog("srwd", "external stt-selftest requested a reload — reloading the voice page");
+    location.reload();
+  } catch {}
+}, 30000);
 
 // ── Pill state poller ─────────────────────────────────────────────────────
 // We recompute the pill state continuously from observed signals
@@ -6040,6 +6065,27 @@ setInterval(() => fetchSessionStats({ countCost: false }), 7000);
 
   const $unlock = document.getElementById("audio-unlock");
   let unlocked = false;
+  let earsStarted = false;
+
+  // Ears (SR + meters) are permission-gated, NOT gesture-gated — they can and
+  // must start on every load without a click, or an unattended reload (the SR
+  // watchdog's stage-2 location.reload(), the stt-selftest prober's heals)
+  // parks the page deaf on the overlay until a human clicks. That was the
+  // recurring "clawd can't hear me" morning state (found 2026-09-01): every
+  // auto-heal reload converted zombie-SR into gate-parked — equally deaf.
+  function startEars() {
+    if (earsStarted) return;
+    earsStarted = true;
+    startWakeRecog();
+    setupAudioMeters().then(setupToneTests);
+    // Barge-mic auto-detection is SHELVED for now (the goal is on-call barge via
+    // BlackHole, not the local mic). Off by default so production never grabs an
+    // extra mic or self-interrupts. Re-enable later with:
+    //   localStorage.setItem("clawd.barge","1")   (then reload)
+    // Shift+S is the reliable manual stop meanwhile; Shift+M scans mics.
+    if (localStorage.getItem("clawd.barge") === "1") setupBargeMic();
+    console.log("%c[clawd] ears started (SR + meters)", "color:#34eeb6");
+  }
 
   function unlockAudioAndStart() {
     if (unlocked) return;
@@ -6053,20 +6099,13 @@ setInterval(() => fetchSessionStats({ countCost: false }), 7000);
       silent.play().then(() => silent.pause()).catch(e => console.warn("[clawd] silent unlock failed:", e.message));
     } catch (e) { console.warn("[clawd] silent unlock threw:", e); }
 
-    // Hide the overlay and start the wake-word recognizer.
+    // Hide the overlay and start the ears (idempotent — usually already live).
     if ($unlock) {
       $unlock.classList.add("dismissed");
       setTimeout(() => { try { $unlock.remove(); } catch {} }, 500);
     }
-    startWakeRecog();
-    setupAudioMeters().then(setupToneTests);
-    // Barge-mic auto-detection is SHELVED for now (the goal is on-call barge via
-    // BlackHole, not the local mic). Off by default so production never grabs an
-    // extra mic or self-interrupts. Re-enable later with:
-    //   localStorage.setItem("clawd.barge","1")   (then reload)
-    // Shift+S is the reliable manual stop meanwhile; Shift+M scans mics.
-    if (localStorage.getItem("clawd.barge") === "1") setupBargeMic();
-    console.log("%c[clawd] audio unlocked, wake-word recognizer started", "color:#34eeb6");
+    startEars();
+    console.log("%c[clawd] audio unlocked", "color:#34eeb6");
   }
 
   // ── Tone test buttons ────────────────────────────────────────────────────
@@ -6165,6 +6204,19 @@ setInterval(() => fetchSessionStats({ countCost: false }), 7000);
       window.addEventListener(ev, unlockAudioAndStart, { once: true, passive: true })
     );
   }
+
+  // Auto-start on load (2026-09-01): ears immediately, and probe autoplay with
+  // the silent WAV — this origin's media engagement is sky-high (TTS all day),
+  // so Chrome normally allows playback with no gesture and the whole overlay
+  // can dismiss itself. Only if autoplay is genuinely blocked does the overlay
+  // stay, and then only TTS waits on the click — clawd can already hear.
+  startEars();
+  try {
+    const probe = new Audio("data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEARKwAAIhYAQACABAAZGF0YQAAAAA=");
+    probe.volume = 0.01;
+    probe.play().then(() => { probe.pause(); unlockAudioAndStart(); })
+      .catch(() => bcLog("srwd", "autoplay blocked — ears live, overlay kept for the TTS unlock click"));
+  } catch {}
 })();
 
 boot();
