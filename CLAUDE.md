@@ -4,6 +4,11 @@ This is the single-page UI that puts clawd on a Zoom/Meet/slop call. See
 `README.md` for the underlying architecture (wake word, WS protocol, TTS).
 These notes are for the things you can't infer from reading code.
 
+> **"The transcript / STT / backchannel words stopped working"?** STOP —
+> read **[`EXPECTATIONS.md`](EXPECTATIONS.md)** first. Austin has reported this
+> exact failure many times; the contract there says a tab reload is not a fix.
+> Then run `AUDIO-RUNBOOK.md` §0 (one command: `./stt-selftest.sh`).
+>
 > **First time back on this project?** Read **[`INPUTS-AND-CHANNELS.md`](INPUTS-AND-CHANNELS.md)**
 > — the mental model for how clawd gets input (voice "okay clawd" = PUBLIC vs the
 > backchannel = PRIVATE) and how public/private routing actually works. One shared

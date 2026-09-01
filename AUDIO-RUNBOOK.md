@@ -12,6 +12,41 @@ daemon, meter, and websocket looked green.
 
 ---
 
+## 0. Transcript dead? Run this first
+
+Since 2026-09-01 the pipeline tests **itself** every 20 min (launchd
+`com.clawd.stt-selftest`) and self-heals — most outages should now end within
+20 min, or you get a macOS notification that both heals failed. So when the
+transcript looks dead:
+
+```bash
+tail -5 /tmp/stt-selftest.log     # did it already catch + heal it? (empty/old = it's been passing)
+cd ~/clawd/clawd-harness/projects/clawd-video-chat && ./stt-selftest.sh; echo "exit=$?"
+```
+
+`exit=0` → the pipeline works **right now** (the run itself heals a stale
+page). If words still don't show up in the backchannel after that, the
+transcript pipeline isn't the problem — look downstream (backchannel page,
+cc-bridge, the 🎬 roll-log counter) or at the slop room mic
+([slop-room-audio-preflight]).
+
+`exit=1` → it already tried both heals (page self-reload, tab reload). Now
+escalate in this order — each step is something a heal-reload can't fix:
+
+1. **Look at the page** (screenshot the window if remote:
+   `screencapture -l <CGWindow id>`). An overlay or banner tells you the
+   cause directly: "🎙 click to start" stuck = autoplay blocked (click it,
+   once); **⚠ SR DEAF** = wrong default input (§4 row 2); routing line wrong
+   = §4.
+2. **Cable test** (§4 below) — distinguishes dead cable / volume-0 from a
+   dead browser.
+3. **Restart Chrome** (browser-wide audio wedge survives tab reloads;
+   also applies the pending update) → re-run `./slop-bridge.sh` to rebind OBS.
+4. Still dead → it's a new failure mode: diagnose, then **add it to §4, the
+   incident log, and a memory** like every entry before it.
+
+Or just tell an agent "run the transcript selftest" — it's one script.
+
 ## 1. The three slots (and what each must be during a call)
 
 | Slot | macOS UI name | CLI read | CLI set | Must be | Why |
@@ -101,6 +136,8 @@ ps -p "$(cat ~/.cache/clawd/slop-bridge-watch.pid 2>/dev/null)" -o pid=,etime= 2
 | Clawd deaf; MIC meter **flat**; page says `IN ← BlackHole 2ch` | 2ch output or input volume at 0 | `osascript -e 'set volume output volume 100' -e 'set volume input volume 100' -e 'set volume without output muted'` (with 2ch as current default). Confirm with the ffmpeg loopback test below. |
 | Clawd deaf; MIC meter flat; page shows **⚠ SR DEAF** banner / `IN ←` ≠ 2ch | Default input moved (classic: 16ch, or AirPods auto-switched) | kill watcher → `SwitchAudioSource -t input -s "BlackHole 2ch"` → restart bridge later to get the watcher back |
 | Clawd deaf; MIC meter **moves**; SR meter dark; transcript empty | Zombie recognizer (Chrome, after sleep/long uptime) | The SR flatline watchdog should self-heal (restart → reload). If not: reload the tab with `?stt=off`. See `CLAUDE.md` "SR FLATLINE". |
+| Clawd deaf; page shows **"🎙 click to start clawd"** overlay | Autoplay blocked on this load, so the silent-WAV auto-unlock failed (ears should still be live since `1d70e99` — if the overlay is up AND he's deaf, the auto-start regressed) | Click the overlay once. If this recurs, check `bcLog srwd` for "autoplay blocked" and fix the auto-start path in `index.html`. |
+| Transcript dead but **all of the above check out** | Chrome's browser-wide audio service wedged (survives tab reloads) | Quit + relaunch **Chrome** (not just the tab), re-run `slop-bridge.sh` to rebind OBS. Cable test (§4) first to prove it's the browser. |
 | SR bar blazing **while clawd speaks**; phone mode interrupts himself | Both directions on one cable: page OUT → 2ch, or 16ch missing | Page OUT picker → BlackHole 16ch; `brew install blackhole-16ch` if absent; verify `routing: OUT → BlackHole 16ch` |
 | Call can't hear clawd; OUT meter moves | 16ch muted / volume 0, **or** slop/Zoom mic not set to 16ch | Re-run `slop-bridge.sh` (unmutes 16ch) — then check the app's own mic picker. ffmpeg test on 16ch below. |
 | **Mac speakers blast notification sounds mid-call** | Sound-effects slot on the speakers | `SwitchAudioSource -t system -s "BlackHole 2ch"` (bridge now does this; a pre-fix watcher won't undo it) |
@@ -137,6 +174,16 @@ Swap the device name/index to test 16ch. This is the one test that distinguishes
 
 ## 6. Incident log (newest first)
 
+- **2026-09-01** — The recurring "transcript dead" finally root-caused: the
+  audio-unlock overlay gated SR behind a human click, so every *unattended*
+  heal-reload (including the 08-10 watchdog's own stage-2) parked the page
+  deaf on the overlay. Also found: the watchdog was blind when sleep killed
+  the metering path with the recognizer (suspended AudioContext / muted
+  track), and Chrome's browser-wide audio service can wedge across tab
+  reloads. Fixes: ears auto-start on every load + autoplay-probe overlay
+  dismissal, watchdog blind-spot patches, and the `com.clawd.stt-selftest`
+  end-to-end prober daemon (§0). Commits `97c4197`, `1d70e99`. Contract:
+  **EXPECTATIONS.md**.
 - **2026-08-20** — Text-message dings blasting the speakers mid-call; user lowered
   volume, which deafened clawd (2ch level → 0). Root cause: sound-effects slot on
   MacBook Pro Speakers. Fix: pin `-t system` → 2ch in bring-up + watcher + stop
