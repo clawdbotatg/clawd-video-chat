@@ -5025,10 +5025,15 @@ const SR_WD_LOUD_PCT = 6;                     // mic RMS-% (MIC-meter scale) tha
 const SR_WD_STALL_MS = 25000;                 // accumulated sound with zero SR results → act
 const SR_WD_TICK_MS = 250;
 const SR_WD_RELOAD_COOLDOWN_MS = 10 * 60 * 1000;
+const SR_WD_IDLE_KICK_MS = 10 * 60 * 1000;    // zero results this long → kick SR even with a silent/blind meter
+const SR_WD_MUTED_REOPEN_MS = 60000;          // track live-but-muted this long → reopen the mic stream
 let _srWdLoudMs = 0;        // sound accumulated while SR silent
 let _srWdStage = 0;         // 0 = healthy, 1 = restarted once (next stall escalates)
 let _srWdSttLoudMs = 0;     // same accumulator for the stt+ pipeline
 let _srWdMicReopenTs = 0;
+let _srWdMutedMs = 0;       // continuous track.muted time
+let _srWdIdleKickTs = 0;    // last sound-independent prophylactic kick
+let _srWdCtxResumeTs = 0;
 let _srWdBuf = null;
 
 function srWdBanner(html) {
@@ -5068,6 +5073,31 @@ setInterval(() => {
     return;
   }
 
+  // Post-sleep blind spots (2026-09-01: SR sat zombie 19h with every meter
+  // "fine"): the watchdog below only acts when the analyser HEARS sound, but
+  // sleep/wake can kill the metering path itself while the track still reads
+  // "live" — a suspended AudioContext or a stuck-muted track both make the
+  // analyser read flat silence, leaving the watchdog blind forever.
+  // (a) suspended input AudioContext → resume it.
+  if (m.ctxIn && m.ctxIn.state !== "running" && Date.now() - _srWdCtxResumeTs > 15000) {
+    _srWdCtxResumeTs = Date.now();
+    bcLog("srwd", `input AudioContext ${m.ctxIn.state} — resuming`);
+    try { m.ctxIn.resume(); } catch {}
+    try { if (m.ctx && m.ctx.state !== "running") m.ctx.resume(); } catch {}
+  }
+  // (b) track live but muted (Chrome mutes tracks the OS stopped feeding) —
+  // sustained, since transient mutes are normal → reopen the stream.
+  if (tr && tr.readyState === "live" && tr.muted) {
+    _srWdMutedMs += SR_WD_TICK_MS;
+    if (_srWdMutedMs >= SR_WD_MUTED_REOPEN_MS && Date.now() - _srWdMicReopenTs > 30000) {
+      _srWdMutedMs = 0;
+      _srWdMicReopenTs = Date.now();
+      bcLog("srwd", "mic track stuck muted — reopening mic stream");
+      if (m.openMic) m.openMic();
+      return;
+    }
+  } else _srWdMutedMs = 0;
+
   if (!_srWdBuf || _srWdBuf.length !== m.micAnalyser.fftSize) _srWdBuf = new Uint8Array(m.micAnalyser.fftSize);
   m.micAnalyser.getByteTimeDomainData(_srWdBuf);
   let sum = 0;
@@ -5075,6 +5105,20 @@ setInterval(() => {
   const pct = Math.min(100, Math.sqrt(sum / _srWdBuf.length) * 240);
   const loud = pct >= SR_WD_LOUD_PCT;
   const now = Date.now();
+
+  // ── sound-independent prophylactic kick ──
+  // Even with a blind meter (see above) or a genuinely silent night, a zombie
+  // recognizer must not survive: zero onresults for 10 min → abort + recreate.
+  // Harmless if SR was merely idle (Chrome's own onend→restart cycles the
+  // recognizer far more often than this), and it means the worst case after
+  // sleep is a 10-min-stale recognizer instead of a permanently dead one.
+  if (now - _srLastResultTs >= SR_WD_IDLE_KICK_MS &&
+      now - _srWdIdleKickTs >= SR_WD_IDLE_KICK_MS &&
+      !_wakeManuallyPaused && !_pttActive) {
+    _srWdIdleKickTs = now;
+    bcLog("srwd", `no SR results for ${Math.round((now - _srLastResultTs) / 60000)} min — prophylactic recognizer restart`);
+    srWdKickRecog();
+  }
 
   // ── webkit SR liveness ──
   if (now - _srLastResultTs < 5000) {
