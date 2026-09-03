@@ -41,14 +41,35 @@ if [ "$cur_in" != "BlackHole 2ch" ]; then
   exit 0
 fi
 
+# Last REAL room text the page logged (ms epoch, from /health stt_text_ts).
+text_ts() {
+  curl -sf -m 3 "$BASE/health" 2>/dev/null \
+    | python3 -c 'import sys,json;print(int(json.load(sys.stdin).get("stt_text_ts",0)))' 2>/dev/null || echo 0
+}
+now_ms() { echo $(($(date +%s) * 1000)); }
+
+# A transcript that is demonstrably FLOWING is the strongest possible proof —
+# real words reached /api/stt-log moments ago. Don't speak the marker over a
+# busy room: mixed with live speech it is often masked or finalized well after
+# the wait window, and that false FAIL reloaded the voice page MID-CALL
+# (2026-09-03 11:58, during a live show). Never reload a page that is hearing.
+FLOW_OK_MS=90000
+if [ "$(text_ts)" -gt $(($(now_ms) - FLOW_OK_MS)) ]; then
+  exit 0
+fi
+
 probe() {
-  local before now
+  # Marker heard (heartbeat advanced) OR real room text arrived while we
+  # waited — either proves cable → SR → server end to end.
+  local before now t0
   before=$(stat -f %m "$HB" 2>/dev/null || echo 0)
+  t0=$(text_ts)
   say -a "BlackHole 2ch" "transcript self test check" 2>>"$LOG"
-  for _ in $(seq 1 12); do
+  for _ in $(seq 1 15); do
     sleep 1
     now=$(stat -f %m "$HB" 2>/dev/null || echo 0)
     [ "$now" -gt "$before" ] && return 0
+    [ "$(text_ts)" -gt "$t0" ] && return 0
   done
   return 1
 }
@@ -82,6 +103,7 @@ r=$(osascript -e 'tell application "Google Chrome"
   end repeat
   return "notab"
 end tell' 2>>"$LOG")
+log "AppleScript reload returned '${r:-<error>}'"
 if [ "$r" = "notab" ]; then
   log "no clawd tab found — opening one"
   open -a "Google Chrome" "$BASE"

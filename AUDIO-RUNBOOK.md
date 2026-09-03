@@ -21,8 +21,16 @@ transcript looks dead:
 
 ```bash
 tail -5 /tmp/stt-selftest.log     # did it already catch + heal it? (empty/old = it's been passing)
+tail -20 ~/.cache/clawd/voice-debug.log   # the page's own story: recognizer restarts/errors, watchdog kicks, PTT holds
 cd ~/clawd/clawd-harness/projects/clawd-video-chat && ./stt-selftest.sh; echo "exit=$?"
 ```
+
+**"Hold-to-talk does nothing"** is the same pipeline: PTT captures whatever
+the recognizer hears during the hold. Check `stt-log.jsonl` for the
+`ev: ptt-down` / `ptt-up` rows — `heardChars: 0` with `srAgeS` large means
+the ear was silent (recognizer stalled, or your voice isn't on the 2ch cable
+— the MIC meter must move while you talk). The page now restarts a stalled
+recognizer during the hold and posts the reason on the backchannel feed.
 
 `exit=0` → the pipeline works **right now** (the run itself heals a stale
 page). If words still don't show up in the backchannel after that, the
@@ -174,6 +182,15 @@ Swap the device name/index to test 16ch. This is the one test that distinguishes
 
 ## 6. Incident log (newest first)
 
+- **2026-09-03** — PTT hold captured nothing on a live show; selftest had
+  been FAILing every 20–40 min for two days (34 times), one heal-reload
+  mid-call. Root cause: the 09-01 prophylactic kick + Chrome's LATE `onend`
+  for an aborted recognizer → perpetual abort/restart chain (each recognizer
+  lived ~250ms — zombie by construction; only a reload broke it). Fixes:
+  identity-guarded `onend` + `test_sr_lifecycle.mjs`; PTT restarts a
+  stale/stalled recognizer and reports an empty hold; selftest trusts a
+  flowing transcript (no marker over a busy room, 15s wait); `/api/debug`
+  persisted to `~/.cache/clawd/voice-debug.log`; SR error backoff.
 - **2026-09-01** — The recurring "transcript dead" finally root-caused: the
   audio-unlock overlay gated SR behind a human click, so every *unattended*
   heal-reload (including the 08-10 watchdog's own stage-2) parked the page

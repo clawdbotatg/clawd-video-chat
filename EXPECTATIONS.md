@@ -43,6 +43,20 @@ deeper hole that guaranteed a repeat:
   REAL recurring killer surfaced — the audio-unlock overlay gated SR behind
   a human click, so every automatic reload "healed" the page into a deaf
   overlay. Auto-heal had been structurally impossible since it shipped.
+- **2026-09-02 → 09-03** — 34 selftest FAILs in two days (one reload landed
+  mid-call), and a **push-to-talk hold captured nothing** on a live show.
+  Root cause: the 09-01 "prophylactic kick" aborts the recognizer and starts
+  a fresh one 250ms later, but Chrome delivers the aborted one's `onend`
+  LATE — it nulled `_recog`, orphaned the live replacement, and scheduled a
+  start that aborted it (one session per page), whose late `onend` did the
+  same… a **perpetual abort/restart chain** (each recognizer lived ~250ms;
+  MIC moving, zero results) that only a reload broke. The heal was creating
+  the disease. Fixes: identity-guarded `onend` (`test_sr_lifecycle.mjs`
+  proves the old code churns and the new one settles), PTT restarts a
+  stale/stalled recognizer itself and says on the backchannel when a hold
+  heard nothing, selftest trusts a flowing transcript over its marker (no
+  more mid-call reloads), and the page's debug feed is persisted to
+  `~/.cache/clawd/voice-debug.log` so the next report has evidence.
 
 Pattern: **the display always looks fine, the daemons are always green, and
 the failure is always one layer below wherever the last fix looked.** That is
@@ -51,7 +65,10 @@ see the words come out.
 
 ## The machinery that upholds the contract (don't regress it)
 
-- **`stt-selftest.sh` + launchd `com.clawd.stt-selftest`** (20 min): speaks
+- **`stt-selftest.sh` + launchd `com.clawd.stt-selftest`** (20 min): passes
+  outright when real room text reached the server in the last 90s (a busy
+  call masks the marker — a false FAIL reloaded the page mid-call on
+  2026-09-03); otherwise speaks
   "transcript self test check" into BlackHole 2ch → must arrive at
   `/api/stt-log` (server heartbeats `~/.cache/clawd/stt-selftest-heard`,
   filters the marker from the transcript/brain). Heals: page self-reload
@@ -61,6 +78,18 @@ see the words come out.
   EVERY page load with no click; the overlay only unlocks TTS playback and
   dismisses itself when autoplay is allowed. Never re-gate hearing behind a
   gesture.
+- **Recognizer lifecycle** (`index.html` `startWakeRecog`, 2026-09-03): only
+  the CURRENT recognizer's `onend` may drive the restart loop (`if (_recog
+  !== r) return`). Any code that aborts/replaces a recognizer must keep that
+  guard or the abort chain comes back. `node test_sr_lifecycle.mjs` runs the
+  real functions against a Chrome-like fake and must pass before a push.
+- **Push-to-talk self-defense** (`pttDown`/`pttUp` + the PTT block in the
+  watchdog tick): a press with no recognizer or 2 min of no results restarts
+  it first; 2.5s of room sound with zero results DURING a hold restarts it
+  once; an empty release is announced on the backchannel with the SR age.
+  Every hold leaves `ev: ptt-down/ptt-up` rows in `stt-log.jsonl`.
+- **Evidence trail**: `/api/debug` lines (srwd / ptt / sr recognizer errors)
+  append to `~/.cache/clawd/voice-debug.log`. Read it before guessing.
 - **SR flatline watchdog** (`index.html`): sound-vs-results detector, plus
   the 2026-09-01 blind-spot patches — AudioContext resume, muted-track
   reopen, and the 10-min no-sound prophylactic recognizer kick. Never make

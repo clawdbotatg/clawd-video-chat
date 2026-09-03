@@ -107,6 +107,9 @@ SELFTEST_HEARD = os.path.expanduser("~/.cache/clawd/stt-selftest-heard")
 # that comparison — nothing ever deletes the file.
 PAGE_RELOAD_REQ = os.path.expanduser("~/.cache/clawd/clawd-page-reload.req")
 LAST_TTS_TS = 0.0  # set by handle_tts; the prober won't yank the tab mid-speech
+LAST_TEXT_TS = 0.0  # last REAL room text appended to the stt-log (proof the ear works; the prober trusts it over its marker)
+VOICE_DEBUG_LOG = os.path.expanduser("~/.cache/clawd/voice-debug.log")  # persisted /api/debug lines (srwd/ptt/sr events)
+VOICE_DEBUG_LOG_MAX = 2 * 1024 * 1024
 
 
 def rotate_stt_log(reason="boot"):
@@ -495,6 +498,7 @@ class Handler(BaseHTTPRequestHandler):
             self.send_json({
                 "status": "ok",
                 "stt_log_mtime": _mt(STT_LOG_PATH),
+                "stt_text_ts": int(LAST_TEXT_TS * 1000),
                 "selftest_heard_ts": _mt(SELFTEST_HEARD),
                 "reload_req_ts": _mt(PAGE_RELOAD_REQ),
                 "last_tts_ts": int(LAST_TTS_TS * 1000),
@@ -750,11 +754,16 @@ class Handler(BaseHTTPRequestHandler):
         """Append one heard utterance — or a wake-turn marker — to STT_LOG_PATH.
 
         Body is either {"text": "<heard speech>"} for ambient room transcript,
-        or {"wake": true, "sent": "<prompt forwarded to clawd>"} for the marker
-        written when an "okay clawd" turn fires. Fire-and-forget from the page;
-        we never let a logging failure break the call, so errors are swallowed
-        into a 500 the client ignores.
+        {"wake": true, "sent": "<prompt forwarded to clawd>"} for the marker
+        written when an "okay clawd" turn fires, or {"ev": "ptt-down"|"ptt-up"|
+        "ptt-stall", ...} — push-to-talk lifecycle markers (2026-09-03: a hold
+        that captured nothing left no trace anywhere; now the log shows the
+        hold, its length, what was heard, and whether the recognizer had to be
+        restarted). Readers that want speech filter on "text" (cc-bridge does).
+        Fire-and-forget from the page; we never let a logging failure break the
+        call, so errors are swallowed into a 500 the client ignores.
         """
+        global LAST_TEXT_TS
         try:
             length = int(self.headers.get("Content-Length", 0))
             body = json.loads(self.rfile.read(length) or b"{}")
@@ -764,6 +773,11 @@ class Handler(BaseHTTPRequestHandler):
         if body.get("wake"):
             rec["wake"] = True
             rec["sent"] = (body.get("sent") or "").strip()
+        elif body.get("ev"):
+            rec["ev"] = str(body.get("ev"))[:24]
+            for k in ("holdMs", "heardChars", "kicked", "srAgeMs", "srAgeS"):
+                if k in body:
+                    rec[k] = body[k]
         else:
             text = (body.get("text") or "").strip()
             if not text:
@@ -782,6 +796,7 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_json({"ok": True, "selftest": True})
                 return
             rec["text"] = text
+            LAST_TEXT_TS = time.time()
         try:
             os.makedirs(os.path.dirname(STT_LOG_PATH), exist_ok=True)
             try:
@@ -832,6 +847,21 @@ class Handler(BaseHTTPRequestHandler):
         msg = (body.get("msg") or "").strip()[:400]
         try:
             push_event(json.dumps({"ev": "vdbg", "kind": kind, "msg": msg}))
+        except Exception:
+            pass
+        # Persist too (2026-09-03): the watchdog/PTT/SR announcements were
+        # SSE-only, so after the fact nobody could tell whether the recognizer
+        # had restarted, errored, or been kicked. Small append-only file, one
+        # rotation. Read: tail ~/.cache/clawd/voice-debug.log
+        try:
+            os.makedirs(os.path.dirname(VOICE_DEBUG_LOG), exist_ok=True)
+            try:
+                if os.path.getsize(VOICE_DEBUG_LOG) > VOICE_DEBUG_LOG_MAX:
+                    os.replace(VOICE_DEBUG_LOG, VOICE_DEBUG_LOG + ".1")
+            except OSError:
+                pass
+            with open(VOICE_DEBUG_LOG, "a", encoding="utf-8") as f:
+                f.write(f"{time.strftime('%Y-%m-%d %H:%M:%S')} [{kind}] {msg}\n")
         except Exception:
             pass
         self.send_json({"ok": True})

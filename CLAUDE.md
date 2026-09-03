@@ -234,8 +234,21 @@ defer it; ≥10 min cooldown so a deeper breakage can't reload-loop). It also
 reopens a mic *stream* whose track ENDED (post-sleep), and in `?stt=openai`
 mode a flatlined `/api/stt` flips `window.__sttUpgradeDead` so webkit finals
 feed the transcript until stt+ answers again. All actions are announced via
-`bcLog("srwd", …)` on the backchannel debug feed. Manual fix remains: reload
+`bcLog("srwd", …)` on the backchannel debug feed **and persisted to
+`~/.cache/clawd/voice-debug.log`** (2026-09-03). Manual fix remains: reload
 the tab with `?stt=off`.
+
+**Recognizer restart race (2026-09-03):** anything that aborts and replaces
+the recognizer must leave the `if (_recog !== r) return;` identity guard in
+`onend` alone — Chrome reports an aborted instance's `onend` late, and
+without the guard that late event orphans the live replacement and starts a
+perpetual abort/restart chain (the "zombie" that failed the selftest 34
+times in two days). `node test_sr_lifecycle.mjs` reproduces it against a
+Chrome-like fake; run it after touching `startWakeRecog`/`srWdKickRecog`.
+**Push-to-talk** rides the same recognizer: a hold with no results restarts
+it (press-time stale check, 2.5s hold-time stall detector), logs
+`ev: ptt-down/ptt-up` rows to the stt-log, and posts "heard NOTHING" with
+the SR age on the backchannel — a silent hold is never silent anymore.
 
 Press **Shift+D** anywhere in the page to dump full state to the
 JavaScript console.
@@ -247,6 +260,10 @@ JavaScript console.
 - `slop-bridge.sh` / `slop-bridge-stop.sh` — bridge bring-up / tear-down.
 - `AUDIO-RUNBOOK.md` — the three macOS audio slots, per-device volume traps,
   symptom→fix table, incident log. Read before touching `slop-bridge.sh`.
+- `test_sr_lifecycle.mjs` — `node` regression test for the recognizer
+  restart race (runs the page's real `startWakeRecog`/`srWdKickRecog`
+  against a Chrome-like fake). `stt-selftest.sh` — the 20-min end-to-end
+  hearing probe (launchd `com.clawd.stt-selftest`).
 - `stream-setup.sh` — older Chrome `--app` + OBS setup, kept for the
   non-slop streaming workflow.
 - `clawdassets/` — avatar video clips.

@@ -3926,6 +3926,10 @@ const SILENCE_MS = 900;             // how long of TRUE silence after wake befor
 const ECHO_TAIL_MS = 800;            // ignore SR for this long after TTS audio ends
 const RESTART_DELAY_MS = 250;        // backoff before restarting after onend
 const PTT_FLUSH_MS = 400;            // on push-to-talk release, wait this long for SR to deliver a pending final before submitting
+const PTT_FLUSH_KICKED_MS = 1500;    // …longer when the recognizer was restarted mid-hold (fresh session finalizes late)
+const PTT_SR_STALE_MS = 120000;      // press-time: zero SR results this long → the recognizer is dead, restart it before capturing
+const PTT_STALL_MS = 2500;           // hold-time: this much ACCUMULATED room sound with zero SR results → restart the recognizer
+const SR_ERR_BACKOFF_MAX_MS = 10000; // onend→restart delay grows with consecutive non-routine SR errors (network etc.), capped here
 const TRANSCRIPT_MAX_AGE_MS = 5 * 60 * 1000;   // 5 minutes of room context
 const TRANSCRIPT_MAX_ENTRIES = 80;             // hard cap so prompts don't bloat
 
@@ -3937,7 +3941,11 @@ let _restartTimer = null;
 let _lastSpokeTs = 0;         // Date.now() of last TTS audio activity (echo gate)
 let _wakeManuallyPaused = false;  // user clicked the mic to take over
 let _pttActive = false;       // push-to-talk button held (backchannel ptt-down…ptt-up): capture without a wake word, never auto-submit on silence
+let _pttKicked = false;       // recognizer restarted during this hold (press-time stale or hold-time stall) → longer release grace
+let _pttLoudMs = 0;           // hold-time stall detector: room sound accumulated while SR delivered nothing
+let _pttDownTs = 0;
 let _srLastResultTs = Date.now(); // ANY onresult (interims count) — SR-liveness stamp read by the flatline watchdog
+let _srErrStreak = 0;             // consecutive non-routine SR errors (network/audio-capture…) — backs the restart delay off
 
 // ── Phone-call mode (Shift+P) ──────────────────────────────────────────────
 // Continuous conversation: NO wake word. SR listens the whole time; each
@@ -4168,6 +4176,15 @@ function isLikelyEcho(text) {
   return false;
 }
 
+// onend→restart delay: 250ms normally; after consecutive non-routine SR errors
+// back off exponentially (500ms, 1s, 2s … 10s) so a Google-side refusal
+// ("network") doesn't turn into a 4-sessions-per-second hammer that gets the
+// page throttled harder. Reset to 250ms by the next real result.
+function srRestartDelay() {
+  if (!_srErrStreak) return RESTART_DELAY_MS;
+  return Math.min(SR_ERR_BACKOFF_MAX_MS, RESTART_DELAY_MS * Math.pow(2, _srErrStreak));
+}
+
 function startWakeRecog() {
   if (_recog) return;
   if (_wakeManuallyPaused) return;
@@ -4215,6 +4232,7 @@ function startWakeRecog() {
   r.onresult = (e) => {
     pingSpeechMeter();
     _srLastResultTs = Date.now();
+    _srErrStreak = 0;
     const echo = inEchoWindow();
     // While push-to-talk is held we WANT to capture even right after TTS (the
     // press ducks clawd's own speech), so bypass the echo gate for PTT only.
@@ -4304,20 +4322,38 @@ function startWakeRecog() {
   };
 
   r.onerror = (e) => {
-    // "no-speech" / "aborted" / "audio-capture" etc. are routine — let onend handle restart.
+    // "no-speech" / "aborted" are routine — let onend handle restart. Anything
+    // else (network, audio-capture, …) is the recognizer failing for real:
+    // count the streak so onend backs off instead of hammering Google's speech
+    // service every 250ms, and announce it on the backchannel debug feed —
+    // these errors used to vanish into a console nobody can reach.
     if (e.error === "not-allowed" || e.error === "service-not-allowed") {
       setPillState("error", "microphone permission denied");
       _wakeManuallyPaused = true;
     } else if (e.error !== "aborted" && e.error !== "no-speech") {
-      console.warn("[wake] SR error:", e.error);
+      _srErrStreak++;
+      console.warn("[wake] SR error:", e.error, "streak", _srErrStreak);
+      bcLog("sr", `recognizer error: ${e.error} (streak ${_srErrStreak}, restart in ${srRestartDelay()}ms)`);
     }
   };
 
   r.onend = () => {
+    // IDENTITY GUARD (2026-09-03). srWdKickRecog / stopWakeRecog abort this
+    // instance and start a fresh one 250ms later — but Chrome reports the
+    // aborted instance's onend asynchronously, often AFTER the replacement is
+    // already live. Without this check that late onend nulled _recog (orphaning
+    // the live replacement) and scheduled another start; Chrome allows one
+    // session per page, so that start aborted the live one, whose late onend
+    // did the same… a perpetual abort/restart chain where every recognizer
+    // lived ~250ms. It looked exactly like a zombie (MIC moving, zero results)
+    // and only a reload broke it — 34 stt-selftest FAILs in two days, one of
+    // them mid-call, and a push-to-talk hold that captured nothing. Only the
+    // CURRENT recognizer's onend may drive the restart loop.
+    if (_recog !== r) return;
     _recog = null;
     if (_wakeManuallyPaused) return;
     clearTimeout(_restartTimer);
-    _restartTimer = setTimeout(startWakeRecog, RESTART_DELAY_MS);
+    _restartTimer = setTimeout(startWakeRecog, srRestartDelay());
   };
 
   _recog = r;
@@ -4785,6 +4821,9 @@ async function shouldRespond(utterance) {
 function pttDown() {
   if (_pttActive) return;
   _pttActive = true;
+  _pttKicked = false;
+  _pttLoudMs = 0;
+  _pttDownTs = Date.now();
   // The press means "listen to me NOW" — duck any in-flight TTS so clawd's own
   // voice doesn't bleed into the capture (and so the room hears the interrupt).
   try { ttsReset(); } catch (e) {}
@@ -4795,6 +4834,19 @@ function pttDown() {
   _lastSubmitTs = Date.now();   // ignore older rolling chatter
   setPillState("armed", "push-to-talk — listening…");
   try { clawdVid.listening(); } catch (e) {}
+  // Press-time sanity (2026-09-03: a 10s hold captured nothing because the
+  // recognizer had silently stalled). No recognizer object at all, or none has
+  // produced a result in PTT_SR_STALE_MS — it is dead or wedged; a fresh
+  // session costs ~1s, a dead one costs the whole turn. The hold-time stall
+  // detector in the SR watchdog tick covers the "alive at press, dead now"
+  // case after PTT_STALL_MS of room sound with zero results.
+  const srAge = Date.now() - _srLastResultTs;
+  if (!_recog || srAge > PTT_SR_STALE_MS) {
+    _pttKicked = true;
+    bcLog("ptt", `hold: recognizer ${_recog ? "silent for " + Math.round(srAge / 1000) + "s" : "missing"} — restarting it`);
+    srWdKickRecog();
+  }
+  logStt({ ev: "ptt-down", srAgeMs: srAge, kicked: _pttKicked });
 }
 
 function pttUp() {
@@ -4803,14 +4855,30 @@ function pttUp() {
   // the last word, then give SR a short grace to deliver any pending final
   // (handleFinalChunk keeps appending while _wakeArmed is still true) before we
   // submit. _pttActive stays true across the grace so armSilenceTimer keeps
-  // no-op'ing and we can't double-submit.
+  // no-op'ing and we can't double-submit. A recognizer restarted mid-hold
+  // finalizes late → longer grace.
   if (_liveInterim) {
     _wakeBuf = (_wakeBuf ? _wakeBuf + " " : "") + _liveInterim;
     _liveInterim = "";
   }
   setPillState("thinking", "thinking…");
   clearTimeout(_silenceTimer);
-  setTimeout(() => { _pttActive = false; submitWakeBuffer(); }, PTT_FLUSH_MS);
+  const grace = _pttKicked ? PTT_FLUSH_KICKED_MS : PTT_FLUSH_MS;
+  setTimeout(() => {
+    _pttActive = false;
+    const heard = (_wakeBuf || "").trim();
+    const holdMs = Date.now() - _pttDownTs - grace;
+    const srAgeS = Math.round((Date.now() - _srLastResultTs) / 1000);
+    logStt({ ev: "ptt-up", holdMs, heardChars: heard.length, kicked: _pttKicked, srAgeS });
+    if (!heard) {
+      // Say WHY on the backchannel instead of silently going back to
+      // "listening" — the user is holding a button and getting nothing.
+      bcLog("ptt", `release after ${(holdMs / 1000).toFixed(1)}s: heard NOTHING — last SR result ${srAgeS}s ago`
+        + (_pttKicked ? " (recognizer was restarted during the hold)" : "")
+        + " — is your voice reaching BlackHole 2ch? MIC meter moving?");
+    }
+    submitWakeBuffer();
+  }, grace);
 }
 
 // (Removed) wirePasteBox() — the on-screen paste/send input is gone; manual
@@ -5112,6 +5180,25 @@ setInterval(() => {
   const pct = Math.min(100, Math.sqrt(sum / _srWdBuf.length) * 240);
   const loud = pct >= SR_WD_LOUD_PCT;
   const now = Date.now();
+
+  // ── push-to-talk hold-time stall detector ──
+  // The user is holding the button and the room is loud, yet SR delivers
+  // nothing: a live recognizer emits an interim within ~1s of speech, so
+  // PTT_STALL_MS of accumulated sound with zero results means it stalled —
+  // the 25s flatline threshold below is far too slow for a 10s hold. Restart
+  // it once per hold; pttUp extends its grace so the fresh session's final
+  // still makes the turn.
+  if (_pttActive) {
+    if (now - _srLastResultTs < 1500) _pttLoudMs = 0;
+    else if (loud) _pttLoudMs += SR_WD_TICK_MS;
+    if (_pttLoudMs >= PTT_STALL_MS && !_pttKicked) {
+      _pttKicked = true;
+      _pttLoudMs = 0;
+      bcLog("ptt", `hold: ${PTT_STALL_MS / 1000}s of room sound, zero SR results — restarting the recognizer mid-hold`);
+      logStt({ ev: "ptt-stall", srAgeMs: now - _srLastResultTs });
+      srWdKickRecog();
+    }
+  } else _pttLoudMs = 0;
 
   // ── sound-independent prophylactic kick ──
   // Even with a blind meter (see above) or a genuinely silent night, a zombie
