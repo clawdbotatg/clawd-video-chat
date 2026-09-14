@@ -282,6 +282,13 @@ JavaScript console.
   - `cc-bridge.py` — WS gateway-protocol bridge on `:7861` that runs `claude -p`
     as the brain (launchd `com.clawd.cc-bridge`). Three voice trust tiers live
     here (`VOICE_SYS` guarded / `VOICE_TRUSTED_SYS` full-access / `PRIVATE_SYS`).
+    The brain's `claude -p` runs with `--permission-mode bypassPermissions`
+    (`PERMISSION_MODE`, 2026-09-14): every account's `settings.json` symlinks
+    `~/.claude/settings.json`, whose `defaultMode: "auto"` put a classifier in
+    front of the shell that denied wallet clicks / CDP / tab listing ("the
+    thing is so dumb"). The channel prompts are the gate, not the classifier —
+    never drop the flag. Verify on the running child: `ps -ax -o command | grep
+    'claude -p'` during a turn must show the flag.
   - `cc-watcher.py` — cross-turn worker watcher (launchd `com.clawd.cc-watcher`).
   - `cc-cdp.py` — CDP client for the slop Canary on `:9222`.
   - `deploy/com.clawd.cc-bridge.plist` / `…cc-watcher.plist` /
