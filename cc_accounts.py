@@ -162,6 +162,91 @@ def _digest_usage(usage):
             "resets_epoch": resets}
 
 
+
+# -- token accounts (2026-10-20) ----------------------------------------------
+# Browser logins die ~30 d after each sign-in (server side). The harness's
+# long-lived `claude setup-token`s live in <harness>/.clawd-harness.env as
+# CLAUDE_TOKEN_<NAME>=sk-ant-oat01-…; each is the account dir <name> (same
+# mapping as server.py's CLAUDE_TOKENS). Rotation treats them as credentialed
+# and hands the pick's token to the child as CLAUDE_CODE_OAUTH_TOKEN. The usage
+# endpoint refuses a setup-token (inference scope only), so usage comes from the
+# anthropic-ratelimit-unified-* headers of a 1-token message — the harness's
+# own probe recipe. The 2026-10-20 outage: every login expired, rotation saw
+# "no credentials" everywhere, and the brain fell back to a dead login →
+# "OAuth session expired and could not be refreshed" on every backchannel turn.
+HARNESS_ENV = os.environ.get(
+    "CC_HARNESS_ENV",
+    os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(
+        os.path.abspath(__file__)))), ".clawd-harness.env"))
+PROBE_URL = "https://api.anthropic.com/v1/messages"
+PROBE_MODEL = os.environ.get("CC_PROBE_MODEL", "claude-haiku-4-5-20251001")
+
+
+def load_tokens():
+    """{account name: setup-token} from the harness env file (+ any
+    CLAUDE_TOKEN_* already in our own env)."""
+    raw = {k: v for k, v in os.environ.items() if k.startswith("CLAUDE_TOKEN_")}
+    try:
+        with open(HARNESS_ENV) as f:
+            for line in f:
+                line = line.strip()
+                if not line.startswith("CLAUDE_TOKEN_") or "=" not in line:
+                    continue
+                k, v = line.split("=", 1)
+                raw.setdefault(k.strip(), v.strip().strip('"').strip("'"))
+    except OSError:
+        pass
+    out = {}
+    for k, v in raw.items():
+        n = re.sub(r"[^a-z0-9-]+", "-", k[len("CLAUDE_TOKEN_"):].lower()).strip("-")
+        if n and v:
+            out[n] = v
+    return out
+
+
+TOKENS = load_tokens()
+
+
+def _probe_token_usage(tok):
+    """(status, {worst, five_hour, resets_epoch}) via the rate-limit headers of
+    a 1-token message; usage None when the headers carry no numbers."""
+    body = json.dumps({
+        "model": PROBE_MODEL, "max_tokens": 1,
+        "system": "You are Claude Code, Anthropic's official CLI for Claude.",
+        "messages": [{"role": "user", "content": "hi"}]}).encode()
+    req = urllib.request.Request(PROBE_URL, data=body, method="POST", headers={
+        "Authorization": f"Bearer {tok}", "anthropic-beta": OAUTH_BETA,
+        "anthropic-version": "2023-06-01", "content-type": "application/json",
+        "User-Agent": "claude-cli/2.1.291 (external, cli)"})
+    try:
+        with urllib.request.urlopen(req, timeout=20) as r:
+            r.read()
+            status, headers = r.status, r.headers
+    except urllib.error.HTTPError as e:
+        status, headers = e.code, e.headers
+    except Exception:
+        return None, None
+    h = {k.lower(): v for k, v in (headers or {}).items()}
+    worst, five_hour, resets = 0.0, None, 0.0
+    found = False
+    for label in ("5h", "7d"):
+        try:
+            used = float(h[f"anthropic-ratelimit-unified-{label}-utilization"]) * 100
+        except (KeyError, TypeError, ValueError):
+            continue
+        found = True
+        worst = max(worst, used)
+        if label == "5h":
+            five_hour = used
+            try:
+                resets = float(h[f"anthropic-ratelimit-unified-{label}-reset"])
+            except (KeyError, TypeError, ValueError):
+                pass
+    if not found:
+        return status, None
+    return status, {"worst": worst, "five_hour": five_hour, "resets_epoch": resets}
+
+
 class _Router:
     def __init__(self):
         self._lock = threading.Lock()
@@ -195,6 +280,19 @@ class _Router:
         snap = {"name": name, "cfg": cfg, "creds": False, "usage_ok": False,
                 "worst": 100.0, "five_hour": None, "fable": False,
                 "resets_epoch": 0.0}
+        tok = TOKENS.get(name)
+        if tok:
+            # token account: no login to expire; fable assumed (Max plans)
+            # unless CC_NO_FABLE says otherwise — the headers carry no model
+            # window to prove it either way.
+            snap["creds"], snap["token"], snap["fable"] = True, True, True
+            status, usage = _probe_token_usage(tok)
+            if status == 401:
+                snap["creds"], snap["why"] = False, "token revoked/expired (401)"
+            elif usage:
+                snap["usage_ok"] = True
+                snap.update(usage)
+            return snap
         creds = _read_credentials(cfg)
         oauth = (creds or {}).get("claudeAiOauth") or {}
         access, refresh = oauth.get("accessToken"), oauth.get("refreshToken")
@@ -215,6 +313,11 @@ class _Router:
         if status == 200 and isinstance(usage, dict):
             snap["usage_ok"] = True
             snap.update(_digest_usage(usage))
+        elif status == 401:
+            # login dead (the ~30 d server-side expiry) and the refresh didn't
+            # take: a turn here is a guaranteed "OAuth session expired". Skip
+            # it outright instead of keeping it as a last resort.
+            snap["creds"], snap["why"] = False, "login expired (401, refresh failed)"
         return snap
 
     def refresh(self, force=False):
@@ -367,6 +470,14 @@ def ensure_for_turn(session_id, exclude=(), force_probe=False):
     if choice is None:
         return None
     os.environ["CLAUDE_CONFIG_DIR"] = choice["cfg"]
+    # A token account rides CLAUDE_CODE_OAUTH_TOKEN (claude-p-agent's env
+    # scrub lets exactly that one CLAUDE_CODE_* var through); a login account
+    # must NOT inherit a previous pick's token — it outranks the dir's login.
+    tok = TOKENS.get(choice["name"]) if choice.get("token") else None
+    if tok:
+        os.environ["CLAUDE_CODE_OAUTH_TOKEN"] = tok
+    else:
+        os.environ.pop("CLAUDE_CODE_OAUTH_TOKEN", None)
     link_transcript(session_id, choice["cfg"])
     return choice
 
@@ -395,11 +506,12 @@ def roster_summary():
     lines = []
     for s in ROUTER.refresh().values():
         if not s["creds"]:
-            lines.append(f"  {s['name']}: no credentials (skipped)")
+            lines.append(f"  {s['name']}: {s.get('why') or 'no credentials'} (skipped)")
         elif not s["usage_ok"]:
             lines.append(f"  {s['name']}: usage unknown (last resort)")
         else:
             lines.append(f"  {s['name']}: worst {s['worst']:.0f}% used"
+                         f"{' [token]' if s.get('token') else ''}"
                          f"{' fable' if s['fable'] else ' NO-fable'}"
                          f"{' WALLED' if ROUTER._is_walled(s['name']) else ''}")
     return "\n".join(lines) or "  (no accounts found — rotation inactive)"
